@@ -69,6 +69,8 @@ function projectSums(p) {
     es, is,
     done: sum(es, (e) => (e.status === 'done' ? e.days : 0)),
     sched: sum(es, (e) => (e.status === 'planned' ? e.days : 0)),
+    free: sum(es, (e) => (e.billable ? 0 : e.days)),       // 義工人天(不請款、不占預估人天)
+    freeDone: sum(es, (e) => (!e.billable && e.status === 'done' ? e.days : 0)),
     received: sum(is, (i) => (i.status === 'received' ? i.amount : 0)),
     billed: sum(is, (i) => i.amount),
   };
@@ -87,7 +89,7 @@ function billingPeriods(p, ps = projectSums(p)) {
   if (p.billing !== 'daily' && p.billing !== 'monthly') return [];
   const rec = {}, m = {};
   for (const i of ps.is) if (i.period) (rec[i.period] ||= []).push(i);
-  if (p.billing === 'daily') for (const e of ps.es) (m[e.date.slice(0, 7)] ||= { done: 0, planned: 0 })[e.status === 'done' ? 'done' : 'planned'] += e.days;
+  if (p.billing === 'daily') for (const e of ps.es) (m[e.date.slice(0, 7)] ||= { done: 0, planned: 0, free: 0 })[!e.billable ? 'free' : e.status === 'done' ? 'done' : 'planned'] += e.days;
   else if (p.start_date && p.end_date) for (const ym of monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7))) m[ym] = { done: 0, planned: 0 };
   for (const ym in rec) m[ym] ||= { done: 0, planned: 0 };
   return Object.keys(m).sort().map((ym) => ({
@@ -108,7 +110,7 @@ function unbilledPeriods() {
 // 年度統計。收入預估 = 收款紀錄(依日期) + 尚未排入收款的餘額(記在專案結束月)
 // 人天 = 已完成 + 已排程 + 尚未排程的預估餘額(平均攤在專案剩餘月份)
 function yearStats(year) {
-  const mk = () => ({ fc: 0, lead: 0, actual: 0, done: 0, sched: 0, unsched: 0 });
+  const mk = () => ({ fc: 0, lead: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0 });
   const months = Array.from({ length: 12 }, mk);
   const byType = {}, bySource = {};
   let undatedRev = 0, undatedDays = 0;
@@ -133,7 +135,7 @@ function yearStats(year) {
     const fcKey = lead ? 'lead' : 'fc';
     const covered = new Set(ps.is.map((i) => i.period).filter(Boolean));
     if (p.billing === 'daily') {
-      for (const e of ps.es) if (!covered.has(e.date.slice(0, 7))) add(e.date, fcKey, e.days * p.rate);
+      for (const e of ps.es) if (e.billable && !covered.has(e.date.slice(0, 7))) add(e.date, fcKey, e.days * p.rate);
     } else if (p.billing === 'monthly') {
       if (p.start_date && p.end_date) for (const ym of monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7))) if (!covered.has(ym)) add(ym, fcKey, p.rate);
     } else {
@@ -143,8 +145,8 @@ function yearStats(year) {
         if (anchor) add(anchor, fcKey, restRev); else undatedRev += restRev;
       }
     }
-    for (const e of ps.es) add(e.date, e.status === 'done' ? 'done' : 'sched', e.days);
-    const restDays = p.est_days - ps.done - ps.sched;
+    for (const e of ps.es) { add(e.date, e.status === 'done' ? 'done' : 'sched', e.days); if (!e.billable) add(e.date, 'free', e.days); }
+    const restDays = p.est_days - (ps.done + ps.sched - ps.free); // 義工不占預估人天
     if (restDays > 0 && p.status !== 'done') {
       const a = p.start_date || p.end_date, b = p.end_date || p.start_date;
       if (!a) { if (!lead) undatedDays += restDays; if (p.billing === 'daily') undatedRev += restDays * p.rate; }
@@ -292,7 +294,7 @@ function viewDashboard() {
     <div class="card"><div class="lbl">已實現收入</div><div class="val">${wan(T.actual)}</div>
       <div class="sub">占預估 ${pct(T.actual, T.fc)}${target ? `・占目標 ${pct(T.actual, target)}` : ''}</div></div>
     <div class="card"><div class="lbl">投入人天(完成/全部)</div><div class="val">${days(T.done)}<span class="muted" style="font-size:15px"> / ${days(allDays)}</span></div>
-      <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}</div></div>
+      <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}${T.free ? `・含義工 ${days(T.free)} 天` : ''}</div></div>
     <div class="card"><div class="lbl">每人天產值(預估)</div><div class="val">${allDays > 0 ? money(T.fc / allDays) : '—'}</div>
       <div class="sub">洽談中潛在 ${wan(T.lead)}</div></div>
   </div>
@@ -337,7 +339,7 @@ function entryLi(e, showDate) {
   return `<li><div class="when">${showDate ? `${md(e.date)}(${dow(e.date)})` : SLOT[e.slot]}</div>
     <div class="main"><div class="t"><span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}</div>
     ${e.content ? `<div class="work">${h(e.content)}</div>` : ''}
-    <div class="small muted">${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・備註:' + h(e.note) : ''}</div></div>
+    <div class="small muted">${e.billable ? '' : '<span class="badge s-lead">義工</span> '}${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・備註:' + h(e.note) : ''}</div></div>
     <div class="acts">${e.status === 'planned' && e.date <= today() ? `<button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button>` : ''}
     <button class="btn sm" data-act="dlg-entry" data-id="${e.id}">編輯</button></div></li>`;
 }
@@ -390,7 +392,7 @@ function projectCard(p) {
     <div class="t">${h(p.name)}</div>
     <div class="meta">${p.client ? h(p.client) + '・' : ''}${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     <div class="nums">
-      <div>人天 完成/排程/預估<b>${days(s.done)} / ${days(used)} / ${days(p.est_days)}</b><div class="meter"><i class="fc" style="width:${Math.min(100, (used / Math.max(p.est_days, used, 0.5)) * 100)}%"></i><i class="act" style="width:${Math.min(100, (s.done / Math.max(p.est_days, used, 0.5)) * 100)}%"></i></div></div>
+      <div>人天 完成/排程/預估${s.free ? `(義工 ${days(s.free)})` : ''}<b>${days(s.done)} / ${days(used)} / ${days(p.est_days)}</b><div class="meter"><i class="fc" style="width:${Math.min(100, (used / Math.max(p.est_days, used, 0.5)) * 100)}%"></i><i class="act" style="width:${Math.min(100, (s.done / Math.max(p.est_days, used, 0.5)) * 100)}%"></i></div></div>
       <div>收入 實收/預估<b>${wan(s.received)} / ${wan(p.est_revenue)}</b><div class="meter"><i class="act" style="width:${Math.min(100, (s.received / Math.max(p.est_revenue, s.received, 1)) * 100)}%"></i></div></div>
     </div></a>`;
 }
@@ -398,17 +400,17 @@ function viewProject(id) {
   const p = proj(id);
   if (!p) return '<div class="empty">找不到專案。<a href="#/projects">回專案列表</a></div>';
   const s = projectSums(p), used = s.done + s.sched;
-  const over = used > p.est_days;
+  const paid = used - s.free, over = paid > p.est_days; // 占用預估人天的只有可請款的排程
   const periods = billingPeriods(p, s), cur = today().slice(0, 7), daily = p.billing === 'daily';
   const rest = p.est_revenue - s.billed;
   const billingCard = periods.length ? `<div class="card"><h2>${daily ? '月結請款' : '每月顧問費'}<span class="spacer"></span><span class="small muted">${billingLabel(p)}</span></h2>
-    <div class="tbl-wrap"><table><tr><th>計費月份</th>${daily ? '<th>完成人天</th><th>已排未完成</th>' : ''}<th>應請金額</th><th>已開立</th><th></th></tr>
-    ${periods.map((b) => `<tr class="${b.ym === cur ? 'now' : ''}"><td>${b.ym}</td>${daily ? `<td class="num">${days(b.done)}</td><td class="num">${days(b.planned)}</td>` : ''}
+    <div class="tbl-wrap"><table><tr><th>計費月份</th>${daily ? '<th>完成人天</th><th>已排未完成</th><th>義工</th>' : ''}<th>應請金額</th><th>已開立</th><th></th></tr>
+    ${periods.map((b) => `<tr class="${b.ym === cur ? 'now' : ''}"><td>${b.ym}</td>${daily ? `<td class="num">${days(b.done)}</td><td class="num">${days(b.planned)}</td><td class="num">${b.free ? days(b.free) : '—'}</td>` : ''}
       <td class="num">${money(b.due)}</td>
       <td class="num">${b.recs.length ? `${money(b.billed)} <span class="badge s-${b.recs.every((i) => i.status === 'received') ? 'received' : 'invoiced'}">${b.recs.every((i) => i.status === 'received') ? '已收款' : ISTATUS[b.recs[0].status]}</span>${b.billed !== b.due ? ' <span class="warn" title="與應請金額不同">⚠</span>' : ''}` : '—'}</td>
       <td>${!b.recs.length && b.due > 0 && b.ym <= cur ? `<button class="btn sm" data-act="bill-period" data-pid="${p.id}" data-ym="${b.ym}">請款</button>` : ''}</td></tr>`).join('')}
     </table></div>
-    <p class="muted small" style="margin-bottom:0">${daily ? '應請金額 = 當月已完成人天 × 日費(半天半價)。' : ''}按「請款」會建立一筆「已請款」的收款紀錄,可再到下方收款清單修改日期、金額或標為已收款。</p></div>` : '';
+    <p class="muted small" style="margin-bottom:0">${daily ? '應請金額 = 當月已完成人天 × 日費(半天半價),義工不計。' : ''}按「請款」會建立一筆「已請款」的收款紀錄,可再到下方收款清單修改日期、金額或標為已收款。</p></div>` : '';
   return `
   <div class="head"><a class="btn icon" href="#/projects" aria-label="返回" style="display:grid;place-items:center">‹</a><h1>${h(p.name)}</h1><button class="btn" data-act="dlg-project" data-id="${p.id}">編輯</button></div>
   <div class="card" style="border-left:4px solid ${tcolor(p.type)}">
@@ -417,8 +419,8 @@ function viewProject(id) {
     ${p.notes ? `<div style="white-space:pre-wrap;margin-top:8px">${h(p.notes)}</div>` : ''}
   </div>
   <div class="grid kpi">
-    <div class="card"><div class="lbl">預估人天</div><div class="val">${days(p.est_days)}</div><div class="sub ${over ? 'bad' : ''}">${over ? `⚠ 已排超出 ${days(used - p.est_days)} 天` : `尚未排程 ${days(p.est_days - used)} 天`}</div></div>
-    <div class="card"><div class="lbl">實際人天(完成/已排)</div><div class="val">${days(s.done)}<span class="muted" style="font-size:15px"> / ${days(used)}</span></div><div class="sub">完成 ${pct(s.done, p.est_days)}</div></div>
+    <div class="card"><div class="lbl">預估人天</div><div class="val">${days(p.est_days)}</div><div class="sub ${over ? 'bad' : ''}">${over ? `⚠ 已排超出 ${days(paid - p.est_days)} 天` : `已排 ${days(paid)}・尚未排程 ${days(p.est_days - paid)} 天`}</div></div>
+    <div class="card"><div class="lbl">實際人天(完成/已排)</div><div class="val">${days(s.done)}<span class="muted" style="font-size:15px"> / ${days(used)}</span></div><div class="sub">${s.free ? `含義工 ${days(s.free)} 天(不請款)` : `完成 ${pct(s.done, p.est_days)}`}</div></div>
     <div class="card"><div class="lbl">預估收入</div><div class="val">${wan(p.est_revenue)}</div><div class="sub">每人天 ${p.est_days > 0 ? money(p.est_revenue / p.est_days) : '—'}</div></div>
     <div class="card"><div class="lbl">已實收</div><div class="val">${wan(s.received)}</div><div class="sub">${pct(s.received, p.est_revenue)}・實際每人天 ${s.done > 0 ? money(s.received / s.done) : '—'}</div></div>
   </div>
@@ -526,7 +528,7 @@ function dlgInstallments(id) {
     ${dlgActions(false)}</form>`);
 }
 function dlgEntry({ id, pid, date }) {
-  const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', content: '', note: '' };
+  const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', content: '', note: '', billable: 1 };
   if (!S.data.projects.some((p) => !['done', 'cancelled'].includes(p.status)) && !id) return toast('請先建立專案');
   openDlg(`<form data-form="entry" data-id="${id || ''}"><h2>${id ? '編輯排程' : '新增排程'}</h2>
     <label class="f"><span>專案</span><select name="project_id" required>${projectOptions(e.project_id)}</select></label>
@@ -535,6 +537,7 @@ function dlgEntry({ id, pid, date }) {
     ${id ? '' : '<label class="chk"><input type="checkbox" name="skip_weekends" checked>多天時略過週末</label>'}
     <div class="row2"><label class="f"><span>時段</span><select name="slot">${opts({ FULL: '全天(1 天)', AM: '上午(0.5 天)', PM: '下午(0.5 天)' }, e.slot)}</select></label>
       <label class="f"><span>狀態</span><select name="status">${opts(ESTATUS, e.status)}</select></label></div>
+    <label class="chk"><input type="checkbox" name="free"${e.billable ? '' : ' checked'}>義工(不請款,不計入專案預估人天)</label>
     <label class="f"><span>工作內容</span><input name="content" value="${h(e.content)}" maxlength="500" placeholder="例:專案啟動會議、第一階段稽核"></label>
     <label class="f"><span>備註(其他紀錄)</span><textarea name="note" maxlength="500">${h(e.note)}</textarea></label>
     ${dlgActions(!!id, 'entry-del', id)}</form>`);
@@ -579,7 +582,7 @@ const FORMS = {
     closeDlg(); if (!id) location.hash = '#/project/' + p.id; await reload();
   },
   async entry(f, id) {
-    f.project_id = Number(f.project_id); f.skip_weekends = !!f.skip_weekends;
+    f.project_id = Number(f.project_id); f.skip_weekends = !!f.skip_weekends; f.billable = !f.free;
     if (id) await api('PUT', '/entries/' + id, f);
     else if (f.to && f.to !== f.date) { const r = await api('POST', '/entries/batch', { ...f, from: f.date }); toast(`已建立 ${r.length} 筆排程`); }
     else await api('POST', '/entries', f);

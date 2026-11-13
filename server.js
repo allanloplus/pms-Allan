@@ -61,6 +61,7 @@ function addColumn(table, name, ddl) {
   }
 }
 addColumn('entries', 'content', "TEXT NOT NULL DEFAULT ''");          // 工作內容
+addColumn('entries', 'billable', 'INTEGER NOT NULL DEFAULT 1');        // 0 = 義工:算實際人天,不請款、不占預估人天
 addColumn('projects', 'billing', "TEXT NOT NULL DEFAULT 'milestone'"); // 收款方式:milestone 分期 / daily 按日計月結 / monthly 每月固定
 addColumn('projects', 'rate', 'INTEGER NOT NULL DEFAULT 0');           // 日費或月費
 addColumn('incomes', 'period', "TEXT NOT NULL DEFAULT ''");            // 計費月份 YYYY-MM(按日計/月費用)
@@ -203,6 +204,7 @@ function cleanEntry(b) {
     project_id: projectId(b.project_id), date: date(b.date, true, '日期'), slot, days: SLOTS[slot],
     status: oneOf(b.status || 'planned', ENTRY_STATUS, '狀態'),
     content: str(b.content, 500), note: str(b.note, 500),
+    billable: b.billable === false || b.billable === 0 || b.billable === '0' ? 0 : 1,
   };
 }
 function cleanIncome(b) {
