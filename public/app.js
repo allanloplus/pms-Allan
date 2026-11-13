@@ -191,7 +191,7 @@ function render() {
   const y0 = window.scrollY;
   app.innerHTML = `
     <header class="topbar">
-      <div class="brand"><span>PMS</span> 工作全貌</div>
+      <div class="brand"><span>Allan Lo</span>的今天和明天</div>
       <nav class="nav">${NAV.map(([k, label, ic]) => `<a href="#/${k}" class="${top === k ? 'on' : ''}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.700" stroke-linecap="round" stroke-linejoin="round">${ICON[ic]}</svg>${label}</a>`).join('')}</nav>
       <div class="spacer"></div>
@@ -204,7 +204,7 @@ function render() {
 
 function viewLogin() {
   return `<div class="login"><div class="card">
-    <h1>PMS 工作全貌</h1><p class="muted small">個人專案・人天・收入管理</p>
+    <h1>Allan Lo的今天和明天</h1><p class="muted small">個人專案・人天・收入管理</p>
     <form data-form="login">
       <label class="f"><span>帳號</span><input name="username" autocomplete="username" autocapitalize="none" required autofocus></label>
       <label class="f"><span>密碼</span><input name="password" type="password" autocomplete="current-password" required></label>

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title PMS 工作全貌
+title Allan Lo的今天和明天
 cd /d "%~dp0"
 
 where node >nul 2>nul
