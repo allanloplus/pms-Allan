@@ -95,6 +95,7 @@ function billingPeriods(p, ps = projectSums(p)) {
   return Object.keys(m).sort().map((ym) => ({
     ym, ...m[ym], recs: rec[ym] || [], billed: (rec[ym] || []).reduce((t, i) => t + i.amount, 0),
     due: p.billing === 'daily' ? m[ym].done * p.rate : p.rate,
+    est: p.billing === 'daily' ? (m[ym].done + m[ym].planned) * p.rate : p.rate, // 含已排未完成
   }));
 }
 // 已過月份、有應請金額但尚未開立請款
@@ -404,13 +405,14 @@ function viewProject(id) {
   const periods = billingPeriods(p, s), cur = today().slice(0, 7), daily = p.billing === 'daily';
   const rest = p.est_revenue - s.billed;
   const billingCard = periods.length ? `<div class="card"><h2>${daily ? '月結請款' : '每月顧問費'}<span class="spacer"></span><span class="small muted">${billingLabel(p)}</span></h2>
-    <div class="tbl-wrap"><table><tr><th>計費月份</th>${daily ? '<th>完成人天</th><th>已排未完成</th><th>義工</th>' : ''}<th>應請金額</th><th>已開立</th><th></th></tr>
-    ${periods.map((b) => `<tr class="${b.ym === cur ? 'now' : ''}"><td>${b.ym}</td>${daily ? `<td class="num">${days(b.done)}</td><td class="num">${days(b.planned)}</td><td class="num">${b.free ? days(b.free) : '—'}</td>` : ''}
+    <div class="tbl-wrap"><table><tr><th>計費月份</th>${daily ? '<th>完成人天</th><th>已排未完成</th><th>義工</th><th>預估金額</th>' : ''}<th>應請金額</th><th>已開立</th><th></th></tr>
+    ${periods.map((b) => `<tr class="${b.ym === cur ? 'now' : ''}"><td>${b.ym}</td>${daily ? `<td class="num">${days(b.done)}</td><td class="num">${days(b.planned)}</td><td class="num">${b.free ? days(b.free) : '—'}</td><td class="num">${money(b.est)}</td>` : ''}
       <td class="num">${money(b.due)}</td>
       <td class="num">${b.recs.length ? `${money(b.billed)} <span class="badge s-${b.recs.every((i) => i.status === 'received') ? 'received' : 'invoiced'}">${b.recs.every((i) => i.status === 'received') ? '已收款' : ISTATUS[b.recs[0].status]}</span>${b.billed !== b.due ? ' <span class="warn" title="與應請金額不同">⚠</span>' : ''}` : '—'}</td>
       <td>${!b.recs.length && b.due > 0 && b.ym <= cur ? `<button class="btn sm" data-act="bill-period" data-pid="${p.id}" data-ym="${b.ym}">請款</button>` : ''}</td></tr>`).join('')}
+    ${(() => { const t = (k) => periods.reduce((a, b) => a + (b[k] || 0), 0); return `<tr class="total"><td>合計</td>${daily ? `<td class="num">${days(t('done'))}</td><td class="num">${days(t('planned'))}</td><td class="num">${t('free') ? days(t('free')) : '—'}</td><td class="num">${money(t('est'))}</td>` : ''}<td class="num">${money(t('due'))}</td><td class="num">${money(t('billed'))}</td><td></td></tr>`; })()}
     </table></div>
-    <p class="muted small" style="margin-bottom:0">${daily ? '應請金額 = 當月已完成人天 × 日費(半天半價),義工不計。' : ''}按「請款」會建立一筆「已請款」的收款紀錄,可再到下方收款清單修改日期、金額或標為已收款。</p></div>` : '';
+    <p class="muted small" style="margin-bottom:0">${daily ? '預估金額 = (已完成 + 已排未完成)人天 × 日費;應請金額只算已完成(半天半價),義工都不計。' : ''}按「請款」會建立一筆「已請款」的收款紀錄,可再到下方收款清單修改日期、金額或標為已收款。</p></div>` : '';
   return `
   <div class="head"><a class="btn icon" href="#/projects" aria-label="返回" style="display:grid;place-items:center">‹</a><h1>${h(p.name)}</h1><button class="btn" data-act="dlg-project" data-id="${p.id}">編輯</button></div>
   <div class="card" style="border-left:4px solid ${tcolor(p.type)}">
