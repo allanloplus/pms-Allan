@@ -48,34 +48,43 @@ node server.js
 | `PORT` | `3300` | 監聽埠 |
 | `HOST` | `127.0.0.1` | 監聽位址(建議維持本機,由反向代理對外) |
 | `DATA_DIR` | `./data` | SQLite 資料庫位置(`pms.db`) |
-| `TRUST_PROXY` | 未設定 | 設為 `1` 表示位於反向代理之後:採用 `X-Forwarded-For` 作為登入鎖定的來源 IP,並在 HTTPS 時發出 `Secure` cookie 與 HSTS |
+| `TRUST_PROXY` | 未設定 | 設為 `1` 表示位於反向代理之後:採用 `X-Forwarded-For` 的最後一段作為登入鎖定的來源 IP,並在 HTTPS 時發出 `Secure` cookie 與 HSTS |
 
-## VPS 部署(Ubuntu / Debian)
+## VPS 部署(Docker,與既有 Caddy 容器共用)
 
-1. 將網域的 DNS A 紀錄指向 VPS 的 IP。
-2. 把程式放到 `/opt/pms`(由 root 擁有,服務只能讀取程式碼):
+主機上已有另一個專案的 Docker Compose(`/opt/pms`,含 Caddy 容器、網路 `pms_default`)。本系統以獨立的
+Compose 專案 `pms-allan` 執行,加入同一個網路,由該 Caddy 代理 `https://pms.123hi.org`。
 
-   ```bash
-   sudo git clone -b claude/youthful-sagan-mlepxp https://github.com/allanloplus/pms-Allan.git /opt/pms
-   ```
-
-3. 執行安裝腳本(可重複執行;網域可省略,預設 `pms.123hi.org`):
+1. DNS:新增 A 紀錄 `pms.123hi.org` → 主機 IP(需先生效,Caddy 才能取得憑證)。
+2. 主機上:
 
    ```bash
-   sudo bash /opt/pms/deploy/install.sh pms.123hi.org
+   git clone -b claude/youthful-sagan-mlepxp https://github.com/allanloplus/pms-Allan.git /opt/pms-allan
+   bash /opt/pms-allan/deploy/install.sh
    ```
 
-   腳本會:檢查 / 安裝 Node.js 22、建立專用帳號 `pms`、首次安裝時要求設定登入密碼(不使用預設密碼)、
-   安裝 systemd 服務(監聽 `127.0.0.1:3300`)、偵測 Caddy 或 nginx 並加入反向代理與 HTTPS。
-   埠號衝突時可用 `sudo PORT=3301 bash /opt/pms/deploy/install.sh`。
+   會建置映像、啟動容器(不對外開埠),並要求設定登入密碼。
+3. 在 Caddy 的 Caddyfile(位於另一個專案 `deploy/Caddyfile`)加入站台後重啟 Caddy:
 
-| 日常維運 | 指令 |
+   ```
+   pms.123hi.org {
+   	encode zstd gzip
+   	reverse_proxy pms-allan:3300
+   	header {
+   		Strict-Transport-Security "max-age=31536000"
+   		-Server
+   	}
+   }
+   ```
+
+| 日常維運(在主機上) | 指令 |
 |---|---|
-| 更新程式(會先備份資料庫到 `data/backup/`,保留 14 份) | `sudo bash /opt/pms/deploy/update.sh` |
-| 重設密碼 | `sudo bash /opt/pms/deploy/set-password.sh` |
-| 狀態 / 日誌 | `systemctl status pms`、`journalctl -u pms -f` |
+| 更新程式(先備份再重建) | `bash /opt/pms-allan/deploy/update.sh` |
+| 備份資料庫到 `/var/backups/pms-allan`(保留 14 天) | `bash /opt/pms-allan/deploy/backup.sh` |
+| 重設密碼 | `bash /opt/pms-allan/deploy/set-password.sh` |
+| 狀態 / 日誌 | `cd /opt/pms-allan/deploy && docker compose ps`、`docker compose logs -f` |
 
-資料都在 `/opt/pms/data/`(`pms.db`),異地備份請定期複製此目錄,或由「設定 → 下載備份」匯出 JSON。
+資料存在 Docker 具名磁碟區 `pms-allan_data`。**不要執行 `docker compose down -v`**,那會刪除資料庫。
 
 ## 安全設計
 

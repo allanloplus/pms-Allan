@@ -1,0 +1,7 @@
+.git
+data
+deploy
+node_modules
+*.md
+*.bat
+*.sh

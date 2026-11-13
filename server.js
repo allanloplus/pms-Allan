@@ -111,7 +111,8 @@ setInterval(() => {
 
 function clientIp(req) {
   if (TRUST_PROXY) {
-    const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    // 取最後一段:那是緊鄰的反向代理看到的來源位址,前面的段落可由用戶端偽造
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').pop().trim();
     if (xff) return xff;
   }
   return req.socket.remoteAddress || '?';

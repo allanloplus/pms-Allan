@@ -1,0 +1,39 @@
+# Allan Lo的今天和明天(PMS)— 與主機上既有的 Caddy 容器共用網路,由它代理 HTTPS
+name: pms-allan
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    environment:
+      PORT: "3300"
+      HOST: 0.0.0.0          # 容器內需監聽所有介面,Caddy 才連得到;埠不對主機公開
+      TRUST_PROXY: "1"
+      DATA_DIR: /app/data
+      TZ: Asia/Taipei
+    expose: ["3300"]
+    volumes:
+      - data:/app/data
+    networks:
+      web:
+        aliases: [pms-allan]   # Caddyfile 以 pms-allan:3300 連入
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 200m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3300/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  data:
+
+networks:
+  web:
+    external: true
+    name: ${CADDY_NETWORK:-pms_default}   # 既有 Caddy 容器所在的網路
