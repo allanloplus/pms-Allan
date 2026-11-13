@@ -28,11 +28,11 @@
 node server.js
 ```
 
-開啟 http://127.0.0.1:3000 ,預設帳號 `allanlo`、密碼 `00001231`。**首次登入後請立即至「設定」變更密碼**(畫面會持續提醒)。
+開啟 http://127.0.0.1:3300 ,預設帳號 `allanlo`、密碼 `00001231`。**首次登入後請立即至「設定」變更密碼**(畫面會持續提醒)。
 
 | 環境變數 | 預設 | 說明 |
 |---|---|---|
-| `PORT` | `3000` | 監聽埠 |
+| `PORT` | `3300` | 監聽埠 |
 | `HOST` | `127.0.0.1` | 監聽位址(建議維持本機,由反向代理對外) |
 | `DATA_DIR` | `./data` | SQLite 資料庫位置(`pms.db`) |
 | `TRUST_PROXY` | 未設定 | 設為 `1` 表示位於反向代理之後:採用 `X-Forwarded-For` 作為登入鎖定的來源 IP,並在 HTTPS 時發出 `Secure` cookie 與 HSTS |
@@ -56,7 +56,7 @@ node server.js
    [Service]
    User=pms
    WorkingDirectory=/opt/pms
-   Environment=PORT=3000 HOST=127.0.0.1 TRUST_PROXY=1
+   Environment=PORT=3300 HOST=127.0.0.1 TRUST_PROXY=1
    ExecStart=/usr/bin/node server.js
    Restart=on-failure
    NoNewPrivileges=true
@@ -76,7 +76,7 @@ node server.js
 
    ```
    pms.example.com {
-       reverse_proxy 127.0.0.1:3000
+       reverse_proxy 127.0.0.1:3300
    }
    ```
 
