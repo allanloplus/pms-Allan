@@ -48,7 +48,21 @@ CREATE TABLE IF NOT EXISTS incomes (
   status TEXT NOT NULL DEFAULT 'expected', note TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS types (
+  id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, label TEXT NOT NULL, short TEXT NOT NULL,
+  color INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1
+);
 `);
+
+// 工作類型:首次啟動(或由舊版升級)時建立預設值,之後可在「設定」中自行維護
+if (!db.prepare('SELECT 1 FROM types LIMIT 1').get()) {
+  const ins = db.prepare('INSERT INTO types (key, label, short, color, sort) VALUES (?,?,?,?,?)');
+  [['consult_isms', 'ISMS 顧問輔導', 'ISMS輔導'], ['consult_tisax', 'TISAX 顧問輔導', 'TISAX輔導'],
+    ['audit_cert', '驗證稽核(ISO 27001)', '驗證稽核'], ['audit_other', '二者/內部/委商稽核', '二者稽核'],
+    ['dev', '系統開發案', '系統開發'], ['training', '教育訓練', '教育訓練'],
+    ['talk', '講座邀約', '講座'], ['product', '自有產品研發', '產品研發'],
+  ].forEach(([key, label, short], i) => ins.run(key, label, short, i + 1, (i + 1) * 10));
+}
 
 // ---------- 密碼與工作階段 ----------
 const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 64).toString('hex');
@@ -115,7 +129,6 @@ function currentUser(req) {
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (msg) => { throw new HttpError(400, msg); };
 
-const TYPES = ['consult_isms', 'consult_tisax', 'audit_cert', 'audit_other', 'dev', 'training', 'talk', 'product'];
 const STATUSES = ['lead', 'reserved', 'confirmed', 'active', 'done', 'cancelled'];
 const SLOTS = { FULL: 1, AM: 0.5, PM: 0.5 };
 const ENTRY_STATUS = ['planned', 'done'];
@@ -134,6 +147,18 @@ function projectId(v) {
   if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) bad('專案不存在');
   return id;
 }
+function typeKey(v) {
+  if (!db.prepare('SELECT 1 FROM types WHERE key = ?').get(String(v ?? ''))) bad('工作類型不正確');
+  return String(v);
+}
+function cleanType(b) {
+  const label = str(b.label, 40);
+  if (!label) bad('類型名稱為必填');
+  const color = Number(b.color), sort = Math.round(Number(b.sort || 0));
+  if (!Number.isInteger(color) || color < 1 || color > 8) bad('顏色不正確');
+  if (!(Math.abs(sort) <= 9999)) bad('排序不正確');
+  return { label, short: str(b.short, 10) || label.slice(0, 6), color, sort, active: b.active === false || b.active === 0 || b.active === '0' ? 0 : 1 };
+}
 function cleanProject(b) {
   const name = str(b.name);
   if (!name) bad('專案名稱為必填');
@@ -143,7 +168,7 @@ function cleanProject(b) {
   const start = date(b.start_date, false, '開始日'), end = date(b.end_date, false, '結束日');
   if (start && end && end < start) bad('結束日不可早於開始日');
   return {
-    name, type: oneOf(b.type, TYPES, '工作類型'), source_type: str(b.source_type, 40),
+    name, type: typeKey(b.type), source_type: str(b.source_type, 40),
     source_name: str(b.source_name), client: str(b.client),
     status: oneOf(b.status, STATUSES, '狀態'), start_date: start, end_date: end,
     est_days: estDays, est_revenue: estRev, notes: str(b.notes, 4000),
@@ -187,6 +212,7 @@ function allData() {
   const settings = {};
   for (const r of db.prepare('SELECT key, value FROM settings').all()) settings[r.key] = r.value;
   return {
+    types: db.prepare('SELECT * FROM types ORDER BY sort, id').all(),
     projects: db.prepare('SELECT * FROM projects ORDER BY id').all(),
     entries: db.prepare('SELECT * FROM entries ORDER BY date, id').all(),
     incomes: db.prepare('SELECT * FROM incomes ORDER BY date, id').all(),
@@ -277,6 +303,20 @@ async function api(req, res, url) {
     return out;
   }
 
+  const tm = p.match(/^\/api\/types(?:\/(\d+))?$/);
+  if (tm) {
+    const id = Number(tm[1]);
+    if (m === 'POST' && !tm[1]) return insert('types', { key: 'c' + crypto.randomBytes(5).toString('hex'), ...cleanType(await body(req)) });
+    if (m === 'PUT' && id) return update('types', id, cleanType(await body(req)));
+    if (m === 'DELETE' && id) {
+      const t = db.prepare('SELECT key FROM types WHERE id = ?').get(id);
+      if (!t) throw new HttpError(404, '資料不存在');
+      const n = db.prepare('SELECT COUNT(*) AS n FROM projects WHERE type = ?').get(t.key).n;
+      if (n) bad(`仍有 ${n} 個專案使用此類型,無法刪除;可改為「停用」`);
+      if (db.prepare('SELECT COUNT(*) AS n FROM types').get().n <= 1) bad('至少需保留一個類型');
+      return remove('types', id);
+    }
+  }
   const mm = p.match(/^\/api\/(projects|entries|incomes)(?:\/(\d+))?$/);
   if (mm) {
     const [, table, idStr] = mm;

@@ -195,3 +195,8 @@ dialog h2 { margin-bottom: 12px; }
 .login { min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
 .login .card { width: min(360px, 100%); padding: 22px; }
 .login h1 { margin-bottom: 4px; } .login p { margin: 0 0 16px; }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.swatches input { position: absolute; opacity: 0; width: 0; min-height: 0; height: 0; }
+.swatches i { display: block; width: 34px; height: 34px; border-radius: 8px; cursor: pointer; border: 3px solid var(--surface); }
+.swatches input:checked + i { box-shadow: 0 0 0 2px var(--text); }
+.swatches input:focus-visible + i { box-shadow: 0 0 0 2px var(--accent); }

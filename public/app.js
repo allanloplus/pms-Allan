@@ -2,16 +2,7 @@
 /* PMS 前端:單頁應用,資料一次載入、統計於瀏覽器計算 */
 
 // ---------- 代碼表 ----------
-const TYPES = {
-  consult_isms: { label: 'ISMS 顧問輔導', short: 'ISMS輔導', c: 1 },
-  consult_tisax: { label: 'TISAX 顧問輔導', short: 'TISAX輔導', c: 2 },
-  audit_cert: { label: '驗證稽核(ISO 27001)', short: '驗證稽核', c: 3 },
-  audit_other: { label: '二者/內部/委商稽核', short: '二者稽核', c: 4 },
-  dev: { label: '系統開發案', short: '系統開發', c: 5 },
-  training: { label: '教育訓練', short: '教育訓練', c: 6 },
-  talk: { label: '講座邀約', short: '講座', c: 7 },
-  product: { label: '自有產品研發', short: '產品研發', c: 8 },
-};
+let TYPES = {}; // 由伺服器載入:key → { id, label, short, c, sort, active }
 const SOURCES = ['驗證公司', '顧問公司', 'SI 公司', '直接客戶', '自有/其他'];
 const STATUS = { lead: '洽談中', reserved: '預定', confirmed: '已確認', active: '進行中', done: '已完成', cancelled: '取消' };
 const SLOT = { FULL: '全天', AM: '上午', PM: '下午' };
@@ -31,7 +22,7 @@ const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) + '%' : '—');
 const md = (s) => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
 const DOW = ['日', '一', '二', '三', '四', '五', '六'];
 const dow = (s) => DOW[new Date(s + 'T00:00:00').getDay()];
-const tcolor = (type) => `var(--t${(TYPES[type] || TYPES.dev).c})`;
+const tcolor = (type) => (TYPES[type] ? `var(--t${TYPES[type].c})` : 'var(--text-3)');
 const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${h(k)}"${k === sel ? ' selected' : ''}>${h(v.label || v)}</option>`).join('');
 
 async function api(method, path, data) {
@@ -61,7 +52,12 @@ const proj = (id) => S.data.projects.find((p) => p.id === id);
 const live = (p) => p && p.status !== 'cancelled';
 const setting = (k, def) => { const v = Number(S.data.settings[k]); return Number.isFinite(v) && S.data.settings[k] !== undefined ? v : def; };
 
-async function reload() { S.data = await api('GET', '/data'); render(); }
+async function reload() {
+  S.data = await api('GET', '/data');
+  TYPES = Object.fromEntries(S.data.types.map((t) => [t.key, { id: t.id, label: t.label, short: t.short, c: t.color, sort: t.sort, active: !!t.active }]));
+  render();
+}
+const activeTypes = (keep) => Object.fromEntries(Object.entries(TYPES).filter(([k, t]) => t.active || k === keep));
 
 // ---------- 統計 ----------
 function projectSums(p) {
@@ -325,7 +321,7 @@ function viewCalendar() {
     <button class="btn primary" data-act="dlg-entry" data-date="${S.calDay}">＋ 排程</button></div>
   <div class="small muted" style="margin-bottom:8px">本月已排 <b class="${total > capM ? 'bad' : ''}">${days(total)}</b> / 產能 ${days(capM)} 天。實色=已完成,虛框(手機為淡色)=預定。</div>
   <div class="cal">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}${cells}</div>
-  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${TYPES[k].short}</span>`).join('')}</div>
+  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${h(TYPES[k].short)}</span>`).join('')}</div>
   <div class="card" style="margin-top:8px"><h2>${md(S.calDay)}(${dow(S.calDay)})${L.conflict ? '<span class="badge s-bad">⚠ 時間衝突</span>' : ''}<span class="spacer"></span><span class="small muted">已排 ${days(L.total)} 天</span></h2>
     <ul class="list">${L.es.map((e) => entryLi(e, false)).join('') || '<li class="empty" style="justify-content:center">這天沒有排程</li>'}</ul></div>`;
 }
@@ -345,7 +341,7 @@ function viewProjects() {
 function projectCard(p) {
   const s = projectSums(p), used = s.done + s.sched;
   return `<a class="pcard" href="#/project/${p.id}" style="--c:${tcolor(p.type)}">
-    <div class="meta"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span>${TYPES[p.type]?.short}</span>${p.source_name || p.source_type ? `<span>・${h(p.source_name || p.source_type)}</span>` : ''}</div>
+    <div class="meta"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span>${h(TYPES[p.type]?.short)}</span>${p.source_name || p.source_type ? `<span>・${h(p.source_name || p.source_type)}</span>` : ''}</div>
     <div class="t">${h(p.name)}</div>
     <div class="meta">${p.client ? h(p.client) + '・' : ''}${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     <div class="nums">
@@ -361,7 +357,7 @@ function viewProject(id) {
   return `
   <div class="head"><a class="btn icon" href="#/projects" aria-label="返回" style="display:grid;place-items:center">‹</a><h1>${h(p.name)}</h1><button class="btn" data-act="dlg-project" data-id="${p.id}">編輯</button></div>
   <div class="card" style="border-left:4px solid ${tcolor(p.type)}">
-    <div class="chips" style="margin-bottom:8px"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span class="badge">${TYPES[p.type]?.label}</span>${p.source_type ? `<span class="badge">來源:${h(p.source_type)}${p.source_name ? ' ' + h(p.source_name) : ''}</span>` : ''}${p.client ? `<span class="badge">客戶:${h(p.client)}</span>` : ''}</div>
+    <div class="chips" style="margin-bottom:8px"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span class="badge">${h(TYPES[p.type]?.label)}</span>${p.source_type ? `<span class="badge">來源:${h(p.source_type)}${p.source_name ? ' ' + h(p.source_name) : ''}</span>` : ''}${p.client ? `<span class="badge">客戶:${h(p.client)}</span>` : ''}</div>
     <div class="muted small">期間 ${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     ${p.notes ? `<div style="white-space:pre-wrap;margin-top:8px">${h(p.notes)}</div>` : ''}
   </div>
@@ -416,6 +412,12 @@ function viewSettings() {
     <div class="row2"><label class="f"><span>年度收入目標(元)</span><input name="annual_target" type="number" min="0" step="10000" inputmode="numeric" value="${setting('annual_target', 0)}"></label>
     <label class="f"><span>每月可投入人天</span><input name="monthly_capacity" type="number" min="0" max="31" step="0.5" inputmode="decimal" value="${setting('monthly_capacity', 20)}"></label></div>
     <button class="btn primary">儲存</button></form></div>
+  <div class="card"><h2>工作類型<span class="spacer"></span><button class="btn sm primary" data-act="dlg-type">＋ 類型</button></h2>
+    <ul class="list">${Object.entries(TYPES).map(([k, t]) => { const n = S.data.projects.filter((p) => p.type === k).length; return `<li>
+      <span class="dot" style="background:${tcolor(k)};width:14px;height:14px"></span>
+      <div class="main"><div class="t">${h(t.label)}${t.active ? '' : ' <span class="badge">已停用</span>'}</div><div class="small muted">簡稱 ${h(t.short)}・${n} 個專案・排序 ${t.sort}</div></div>
+      <div class="acts"><button class="btn sm" data-act="dlg-type" data-key="${h(k)}">編輯</button></div></li>`; }).join('')}</ul>
+    <p class="muted small" style="margin-bottom:0">停用的類型不會出現在新增專案的選單,既有專案與統計不受影響。</p></div>
   <div class="card"><h2>帳號</h2><p class="muted small" style="margin-top:0">登入帳號:${h(S.user.username)}</p>
     <div class="chips"><button class="btn" data-act="dlg-password">變更密碼</button><button class="btn" data-act="logout">登出</button></div></div>
   <div class="card"><h2>資料備份</h2><p class="muted small" style="margin-top:0">匯出全部專案、排程與收款為 JSON 檔。</p><a class="btn" href="/api/export" download style="display:inline-block">下載備份</a></div>`;
@@ -431,11 +433,11 @@ const projectOptions = (sel) => {
 };
 
 function dlgProject(id) {
-  const p = id ? proj(id) : { name: '', type: 'consult_isms', source_type: SOURCES[0], source_name: '', client: '', status: 'reserved', start_date: '', end_date: '', est_days: '', est_revenue: '', notes: '' };
+  const p = id ? proj(id) : { name: '', type: Object.keys(activeTypes())[0], source_type: SOURCES[0], source_name: '', client: '', status: 'reserved', start_date: '', end_date: '', est_days: '', est_revenue: '', notes: '' };
   const names = [...new Set(S.data.projects.map((x) => x.source_name).filter(Boolean))];
   openDlg(`<form data-form="project" data-id="${id || ''}"><h2>${id ? '編輯專案' : '新增專案'}</h2>
     <label class="f"><span>專案名稱</span><input name="name" value="${h(p.name)}" required maxlength="200"></label>
-    <div class="row2"><label class="f"><span>工作類型</span><select name="type">${opts(TYPES, p.type)}</select></label>
+    <div class="row2"><label class="f"><span>工作類型</span><select name="type">${opts(activeTypes(p.type), p.type)}</select></label>
       <label class="f"><span>狀態</span><select name="status">${opts(STATUS, p.status)}</select></label></div>
     <div class="row2"><label class="f"><span>來源類別</span><select name="source_type">${SOURCES.map((s) => `<option${s === p.source_type ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
       <label class="f"><span>來源名稱(如 SGS)</span><input name="source_name" value="${h(p.source_name)}" list="srcnames"><datalist id="srcnames">${names.map((n) => `<option value="${h(n)}">`).join('')}</datalist></label></div>
@@ -471,6 +473,16 @@ function dlgIncome({ id, pid }) {
     <label class="f"><span>備註(如:第一期款)</span><input name="note" value="${h(i.note)}" maxlength="500"></label>
     ${dlgActions(!!id, 'income-del', id)}</form>`);
 }
+function dlgType(key) {
+  const t = key ? TYPES[key] : { label: '', short: '', c: (Object.keys(TYPES).length % 8) + 1, sort: Math.max(0, ...Object.values(TYPES).map((x) => x.sort)) + 10, active: true };
+  openDlg(`<form data-form="type" data-id="${key ? t.id : ''}"><h2>${key ? '編輯工作類型' : '新增工作類型'}</h2>
+    <label class="f"><span>類型名稱</span><input name="label" value="${h(t.label)}" required maxlength="40"></label>
+    <div class="row2"><label class="f"><span>簡稱(行事曆圖例用)</span><input name="short" value="${h(t.short)}" maxlength="10"></label>
+      <label class="f"><span>排序(小的在前)</span><input name="sort" type="number" step="1" inputmode="numeric" value="${t.sort}"></label></div>
+    <div class="f"><span class="small muted">顏色</span><div class="swatches">${[1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<label><input type="radio" name="color" value="${c}"${c === t.c ? ' checked' : ''}><i style="background:var(--t${c})"></i></label>`).join('')}</div></div>
+    <label class="chk"><input type="checkbox" name="active"${t.active ? ' checked' : ''}>啟用(可用於新專案)</label>
+    ${dlgActions(!!key, 'type-del', key ? t.id : 0)}</form>`);
+}
 function dlgPassword() {
   openDlg(`<form data-form="password"><h2>變更密碼</h2>
     <input name="username" autocomplete="username" value="${h(S.user.username)}" hidden>
@@ -496,6 +508,7 @@ const FORMS = {
     S.calDay = f.date; closeDlg(); await reload();
   },
   async income(f, id) { f.project_id = Number(f.project_id); await api(id ? 'PUT' : 'POST', '/incomes' + (id ? '/' + id : ''), f); closeDlg(); await reload(); },
+  async type(f, id) { await api(id ? 'PUT' : 'POST', '/types' + (id ? '/' + id : ''), { ...f, color: Number(f.color), active: !!f.active }); closeDlg(); await reload(); },
   async password(f) {
     if (f.next !== f.again) throw new Error('兩次輸入的新密碼不一致');
     await api('POST', '/password', f); S.user.must_change = false; closeDlg(); toast('密碼已變更'); render();
@@ -519,6 +532,8 @@ const ACTS = {
   'dlg-entry': (d) => dlgEntry({ id: Number(d.id) || 0, pid: Number(d.pid) || 0, date: d.date }),
   'dlg-income': (d) => dlgIncome({ id: Number(d.id) || 0, pid: Number(d.pid) || 0 }),
   'dlg-password': dlgPassword,
+  'dlg-type': (d) => dlgType(d.key || ''),
+  'type-del': async (d) => { if (confirm('刪除這個工作類型?')) { await api('DELETE', '/types/' + d.id); closeDlg(); await reload(); } },
   'dlg-close': closeDlg,
   'cal-day': (d) => { S.calDay = d.date; render(); },
   'cal-prev': () => shiftMonth(-1), 'cal-next': () => shiftMonth(1),
