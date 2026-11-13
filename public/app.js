@@ -292,7 +292,8 @@ function entryLi(e, showDate) {
   const p = proj(e.project_id);
   return `<li><div class="when">${showDate ? `${md(e.date)}(${dow(e.date)})` : SLOT[e.slot]}</div>
     <div class="main"><div class="t"><span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}</div>
-    <div class="small muted">${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・' + h(e.note) : ''}</div></div>
+    ${e.content ? `<div class="work">${h(e.content)}</div>` : ''}
+    <div class="small muted">${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・備註:' + h(e.note) : ''}</div></div>
     <div class="acts">${e.status === 'planned' && e.date <= today() ? `<button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button>` : ''}
     <button class="btn sm" data-act="dlg-entry" data-id="${e.id}">編輯</button></div></li>`;
 }
@@ -310,7 +311,7 @@ function viewCalendar() {
     const L = dayLoad(ds); total += L.total;
     cells += `<button class="cal-cell${ds === t ? ' today' : ''}${ds === S.calDay ? ' sel' : ''}${L.conflict ? ' conflict' : ''}${d.getDay() % 6 === 0 ? ' we' : ''}" data-act="cal-day" data-date="${ds}" aria-label="${ds} 已排 ${L.total} 天">
       <div class="d"><b>${d.getDate()}</b>${L.conflict ? '<span class="x">⚠</span>' : ''}</div>
-      ${L.es.map((e) => { const p = proj(e.project_id); return `<div class="ev ${e.status} ${e.slot}${e.slot === 'FULL' ? '' : ' half'}" style="--c:${tcolor(p.type)}">${e.slot === 'FULL' ? '' : SLOT[e.slot][0] + ' '}${h(p.name)}</div>`; }).join('')}
+      ${L.es.map((e) => { const p = proj(e.project_id); return `<div class="ev ${e.status} ${e.slot}${e.slot === 'FULL' ? '' : ' half'}" style="--c:${tcolor(p.type)}" title="${h(p.name)}${e.content ? ' — ' + h(e.content) : ''}">${e.slot === 'FULL' ? '' : SLOT[e.slot][0] + ' '}${h(p.name)}</div>`; }).join('')}
     </button>`;
   }
   const capM = setting('monthly_capacity', 20), L = dayLoad(S.calDay);
@@ -450,7 +451,7 @@ function dlgProject(id) {
     ${dlgActions(!!id, 'project-del', id)}</form>`);
 }
 function dlgEntry({ id, pid, date }) {
-  const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', note: '' };
+  const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', content: '', note: '' };
   if (!S.data.projects.some((p) => !['done', 'cancelled'].includes(p.status)) && !id) return toast('請先建立專案');
   openDlg(`<form data-form="entry" data-id="${id || ''}"><h2>${id ? '編輯排程' : '新增排程'}</h2>
     <label class="f"><span>專案</span><select name="project_id" required>${projectOptions(e.project_id)}</select></label>
@@ -459,7 +460,8 @@ function dlgEntry({ id, pid, date }) {
     ${id ? '' : '<label class="chk"><input type="checkbox" name="skip_weekends" checked>多天時略過週末</label>'}
     <div class="row2"><label class="f"><span>時段</span><select name="slot">${opts({ FULL: '全天(1 天)', AM: '上午(0.5 天)', PM: '下午(0.5 天)' }, e.slot)}</select></label>
       <label class="f"><span>狀態</span><select name="status">${opts(ESTATUS, e.status)}</select></label></div>
-    <label class="f"><span>備註</span><input name="note" value="${h(e.note)}" maxlength="500"></label>
+    <label class="f"><span>工作內容</span><input name="content" value="${h(e.content)}" maxlength="500" placeholder="例:專案啟動會議、第一階段稽核"></label>
+    <label class="f"><span>備註(其他紀錄)</span><textarea name="note" maxlength="500">${h(e.note)}</textarea></label>
     ${dlgActions(!!id, 'entry-del', id)}</form>`);
 }
 function dlgIncome({ id, pid }) {

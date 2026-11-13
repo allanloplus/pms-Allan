@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS types (
 );
 `);
 
+// 升級:排程新增「工作內容」欄位
+if (!db.prepare("SELECT 1 FROM pragma_table_info('entries') WHERE name = 'content'").get()) {
+  db.exec("ALTER TABLE entries ADD COLUMN content TEXT NOT NULL DEFAULT ''");
+}
+
 // 工作類型:首次啟動(或由舊版升級)時建立預設值,之後可在「設定」中自行維護
 if (!db.prepare('SELECT 1 FROM types LIMIT 1').get()) {
   const ins = db.prepare('INSERT INTO types (key, label, short, color, sort) VALUES (?,?,?,?,?)');
@@ -178,7 +183,8 @@ function cleanEntry(b) {
   const slot = oneOf(b.slot, Object.keys(SLOTS), '時段');
   return {
     project_id: projectId(b.project_id), date: date(b.date, true, '日期'), slot, days: SLOTS[slot],
-    status: oneOf(b.status || 'planned', ENTRY_STATUS, '狀態'), note: str(b.note, 500),
+    status: oneOf(b.status || 'planned', ENTRY_STATUS, '狀態'),
+    content: str(b.content, 500), note: str(b.note, 500),
   };
 }
 function cleanIncome(b) {
