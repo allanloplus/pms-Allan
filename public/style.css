@@ -201,3 +201,4 @@ dialog h2 { margin-bottom: 12px; }
 .swatches input:checked + i { box-shadow: 0 0 0 2px var(--text); }
 .swatches input:focus-visible + i { box-shadow: 0 0 0 2px var(--accent); }
 .list .main .work { font-size: 13.5px; overflow-wrap: anywhere; }
+[hidden] { display: none !important; }

@@ -54,10 +54,16 @@ CREATE TABLE IF NOT EXISTS types (
 );
 `);
 
-// 升級:排程新增「工作內容」欄位
-if (!db.prepare("SELECT 1 FROM pragma_table_info('entries') WHERE name = 'content'").get()) {
-  db.exec("ALTER TABLE entries ADD COLUMN content TEXT NOT NULL DEFAULT ''");
+// 升級:舊資料庫補上新欄位
+function addColumn(table, name, ddl) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(name)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+  }
 }
+addColumn('entries', 'content', "TEXT NOT NULL DEFAULT ''");          // 工作內容
+addColumn('projects', 'billing', "TEXT NOT NULL DEFAULT 'milestone'"); // 收款方式:milestone 分期 / daily 按日計月結 / monthly 每月固定
+addColumn('projects', 'rate', 'INTEGER NOT NULL DEFAULT 0');           // 日費或月費
+addColumn('incomes', 'period', "TEXT NOT NULL DEFAULT ''");            // 計費月份 YYYY-MM(按日計/月費用)
 
 // 工作類型:首次啟動(或由舊版升級)時建立預設值,之後可在「設定」中自行維護
 if (!db.prepare('SELECT 1 FROM types LIMIT 1').get()) {
@@ -138,6 +144,7 @@ const STATUSES = ['lead', 'reserved', 'confirmed', 'active', 'done', 'cancelled'
 const SLOTS = { FULL: 1, AM: 0.5, PM: 0.5 };
 const ENTRY_STATUS = ['planned', 'done'];
 const INCOME_STATUS = ['expected', 'invoiced', 'received'];
+const BILLING = ['milestone', 'daily', 'monthly'];
 
 const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 function date(v, required, label) {
@@ -167,16 +174,27 @@ function cleanType(b) {
 function cleanProject(b) {
   const name = str(b.name);
   if (!name) bad('專案名稱為必填');
-  const estDays = Number(b.est_days || 0), estRev = Math.round(Number(b.est_revenue || 0));
+  const estDays = Number(b.est_days || 0);
+  let estRev = Math.round(Number(b.est_revenue || 0));
+  const billing = oneOf(b.billing || 'milestone', BILLING, '收款方式');
+  const rate = billing === 'milestone' ? 0 : Math.round(Number(b.rate || 0));
+  if (!(rate >= 0)) bad('費率不正確');
   if (!(estDays >= 0) || Math.round(estDays * 2) !== estDays * 2) bad('預估人天需為 0.5 的倍數');
   if (!(estRev >= 0)) bad('預估收入不正確');
   const start = date(b.start_date, false, '開始日'), end = date(b.end_date, false, '結束日');
   if (start && end && end < start) bad('結束日不可早於開始日');
+  // 按日計與月費的預估收入由費率推算
+  if (billing === 'daily') estRev = Math.round(estDays * rate);
+  if (billing === 'monthly') {
+    if (!start || !end) bad('每月固定費用需填開始日與結束日(合約期間)');
+    const months = (Number(end.slice(0, 4)) - Number(start.slice(0, 4))) * 12 + Number(end.slice(5, 7)) - Number(start.slice(5, 7)) + 1;
+    estRev = months * rate;
+  }
   return {
     name, type: typeKey(b.type), source_type: str(b.source_type, 40),
     source_name: str(b.source_name), client: str(b.client),
     status: oneOf(b.status, STATUSES, '狀態'), start_date: start, end_date: end,
-    est_days: estDays, est_revenue: estRev, notes: str(b.notes, 4000),
+    est_days: estDays, est_revenue: estRev, billing, rate, notes: str(b.notes, 4000),
   };
 }
 function cleanEntry(b) {
@@ -190,8 +208,14 @@ function cleanEntry(b) {
 function cleanIncome(b) {
   const amount = Math.round(Number(b.amount));
   if (!(amount > 0)) bad('金額需大於 0');
+  const pid = projectId(b.project_id), d = date(b.date, true, '日期');
+  let period = str(b.period, 7);
+  if (period && !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) bad('計費月份格式錯誤');
+  // 按日計/月費專案的收款一律歸屬某個計費月份,避免與應計金額重複計算
+  const billing = db.prepare('SELECT billing FROM projects WHERE id = ?').get(pid).billing;
+  if (billing === 'milestone') period = ''; else if (!period) period = d.slice(0, 7);
   return {
-    project_id: projectId(b.project_id), date: date(b.date, true, '日期'), amount,
+    project_id: pid, date: d, amount, period,
     status: oneOf(b.status || 'expected', INCOME_STATUS, '狀態'), note: str(b.note, 500),
   };
 }
@@ -282,7 +306,7 @@ async function api(req, res, url) {
   if (p === '/api/settings' && m === 'PUT') {
     const b = await body(req);
     const set = db.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-    for (const k of ['annual_target', 'monthly_capacity']) {
+    for (const k of ['annual_target', 'monthly_capacity', 'default_daily_rate']) {
       if (b[k] === undefined) continue;
       const n = Number(b[k]);
       if (!(n >= 0)) bad('設定值不正確');

@@ -7,6 +7,7 @@ const SOURCES = ['驗證公司', '顧問公司', 'SI 公司', '直接客戶', '�
 const STATUS = { lead: '洽談中', reserved: '預定', confirmed: '已確認', active: '進行中', done: '已完成', cancelled: '取消' };
 const SLOT = { FULL: '全天', AM: '上午', PM: '下午' };
 const ESTATUS = { planned: '預定', done: '已完成' };
+const BILLING = { milestone: '專案分期請款', daily: '按日計・月結請款', monthly: '每月固定費用' };
 const ISTATUS = { expected: '預計', invoiced: '已請款', received: '已收款' };
 
 // ---------- 工具 ----------
@@ -73,6 +74,37 @@ function projectSums(p) {
   };
 }
 
+// 起訖月份(YYYY-MM)之間的所有月份
+function monthSpan(from, to) {
+  const out = [];
+  for (let [y, m] = from.split('-').map(Number); `${y}-${pad(m)}` <= to; m === 12 ? (y++, m = 1) : m++) out.push(`${y}-${pad(m)}`);
+  return out;
+}
+const billingLabel = (p) => (p.billing === 'daily' ? `按日計 ${money(p.rate)}/天` : p.billing === 'monthly' ? `月費 ${money(p.rate)}` : '分期請款');
+
+// 按日計/月費專案的各計費月份:應請金額 due 與已開立的收款紀錄 recs
+function billingPeriods(p, ps = projectSums(p)) {
+  if (p.billing !== 'daily' && p.billing !== 'monthly') return [];
+  const rec = {}, m = {};
+  for (const i of ps.is) if (i.period) (rec[i.period] ||= []).push(i);
+  if (p.billing === 'daily') for (const e of ps.es) (m[e.date.slice(0, 7)] ||= { done: 0, planned: 0 })[e.status === 'done' ? 'done' : 'planned'] += e.days;
+  else if (p.start_date && p.end_date) for (const ym of monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7))) m[ym] = { done: 0, planned: 0 };
+  for (const ym in rec) m[ym] ||= { done: 0, planned: 0 };
+  return Object.keys(m).sort().map((ym) => ({
+    ym, ...m[ym], recs: rec[ym] || [], billed: (rec[ym] || []).reduce((t, i) => t + i.amount, 0),
+    due: p.billing === 'daily' ? m[ym].done * p.rate : p.rate,
+  }));
+}
+// 已過月份、有應請金額但尚未開立請款
+function unbilledPeriods() {
+  const cur = today().slice(0, 7), out = [];
+  for (const p of S.data.projects) {
+    if (!live(p) || p.status === 'lead') continue;
+    for (const b of billingPeriods(p)) if (!b.recs.length && b.due > 0 && b.ym < cur) out.push({ p, ...b });
+  }
+  return out.sort((a, b) => a.ym.localeCompare(b.ym));
+}
+
 // 年度統計。收入預估 = 收款紀錄(依日期) + 尚未排入收款的餘額(記在專案結束月)
 // 人天 = 已完成 + 已排程 + 尚未排程的預估餘額(平均攤在專案剩餘月份)
 function yearStats(year) {
@@ -97,22 +129,32 @@ function yearStats(year) {
       add(inc.date, lead ? 'lead' : 'fc', inc.amount);
       if (inc.status === 'received') add(inc.date, 'actual', inc.amount);
     }
-    const restRev = p.est_revenue - ps.billed;
-    if (restRev > 0) {
-      const anchor = p.end_date || p.start_date;
-      if (anchor) add(anchor, lead ? 'lead' : 'fc', restRev); else undatedRev += restRev;
+    // 尚未開立收款紀錄的部分:依收款方式推算
+    const fcKey = lead ? 'lead' : 'fc';
+    const covered = new Set(ps.is.map((i) => i.period).filter(Boolean));
+    if (p.billing === 'daily') {
+      for (const e of ps.es) if (!covered.has(e.date.slice(0, 7))) add(e.date, fcKey, e.days * p.rate);
+    } else if (p.billing === 'monthly') {
+      if (p.start_date && p.end_date) for (const ym of monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7))) if (!covered.has(ym)) add(ym, fcKey, p.rate);
+    } else {
+      const restRev = p.est_revenue - ps.billed;
+      if (restRev > 0) {
+        const anchor = p.end_date || p.start_date;
+        if (anchor) add(anchor, fcKey, restRev); else undatedRev += restRev;
+      }
     }
     for (const e of ps.es) add(e.date, e.status === 'done' ? 'done' : 'sched', e.days);
     const restDays = p.est_days - ps.done - ps.sched;
-    if (restDays > 0 && !lead && p.status !== 'done') {
+    if (restDays > 0 && p.status !== 'done') {
       const a = p.start_date || p.end_date, b = p.end_date || p.start_date;
-      if (!a) undatedDays += restDays;
+      if (!a) { if (!lead) undatedDays += restDays; if (p.billing === 'daily') undatedRev += restDays * p.rate; }
       else {
-        let from = a.slice(0, 7) > thisMonth ? a.slice(0, 7) : thisMonth;
-        const to = b.slice(0, 7) > from ? b.slice(0, 7) : from;
-        const span = [];
-        for (let [y, m] = from.split('-').map(Number); `${y}-${pad(m)}` <= to; m === 12 ? (y++, m = 1) : m++) span.push(`${y}-${pad(m)}`);
-        span.forEach((ym) => add(ym, 'unsched', restDays / span.length));
+        const from = a.slice(0, 7) > thisMonth ? a.slice(0, 7) : thisMonth;
+        const span = monthSpan(from, b.slice(0, 7) > from ? b.slice(0, 7) : from);
+        for (const ym of span) {
+          if (!lead) add(ym, 'unsched', restDays / span.length);
+          if (p.billing === 'daily' && !covered.has(ym)) add(ym, fcKey, (restDays / span.length) * p.rate);
+        }
       }
     }
     if (touched) groups.forEach((g) => g.n++);
@@ -238,6 +280,7 @@ function viewDashboard() {
   const conflicts = [...new Set(S.data.entries.filter((e) => e.date >= t).map((e) => e.date))].filter((d) => dayLoad(d).conflict).sort();
   const stale = S.data.entries.filter((e) => e.date < t && e.status === 'planned' && live(proj(e.project_id)));
   const overdue = S.data.incomes.filter((i) => i.date < t && i.status !== 'received' && live(proj(i.project_id)));
+  const unbilled = unbilledPeriods();
   const until = ymd(new Date(Date.now() + 21 * 864e5));
   const upcoming = S.data.entries.filter((e) => e.date >= t && e.date <= until && live(proj(e.project_id)));
 
@@ -268,7 +311,8 @@ function viewDashboard() {
       ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
       ${stale.length ? `<li><span class="badge s-lead">待確認</span><div class="main">${stale.length} 筆過去的排程尚未確認(共 ${days(stale.reduce((s, e) => s + e.days, 0))} 天)</div><div class="acts"><button class="btn sm" data-act="confirm-stale">全部標為完成</button></div></li>` : ''}
       ${overdue.map((i) => `<li><span class="badge s-bad">逾期未收</span><div class="main"><div class="t">${h(proj(i.project_id).name)}</div><div class="small muted">${i.date}・${money(i.amount)}・${ISTATUS[i.status]}</div></div><div class="acts"><button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button></div></li>`).join('')}
-      ${!conflicts.length && !stale.length && !overdue.length ? '<li class="empty" style="justify-content:center">沒有待處理事項</li>' : ''}
+      ${unbilled.map((b) => `<li><span class="badge s-lead">未請款</span><div class="main"><div class="t">${h(b.p.name)}</div><div class="small muted">${b.ym}${b.p.billing === 'daily' ? ` 月結・${days(b.done)} 天` : ' 月費'}・<span class="num">${money(b.due)}</span></div></div><div class="acts"><button class="btn sm" data-act="bill-period" data-pid="${b.p.id}" data-ym="${b.ym}">請款</button></div></li>`).join('')}
+      ${!conflicts.length && !stale.length && !overdue.length && !unbilled.length ? '<li class="empty" style="justify-content:center">沒有待處理事項</li>' : ''}
     </ul></div>
     <div class="card"><h2>未來 3 週行程<span class="spacer"></span><a class="small" href="#/calendar">行事曆 ›</a></h2><ul class="list">
       ${upcoming.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
@@ -342,7 +386,7 @@ function viewProjects() {
 function projectCard(p) {
   const s = projectSums(p), used = s.done + s.sched;
   return `<a class="pcard" href="#/project/${p.id}" style="--c:${tcolor(p.type)}">
-    <div class="meta"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span>${h(TYPES[p.type]?.short)}</span>${p.source_name || p.source_type ? `<span>・${h(p.source_name || p.source_type)}</span>` : ''}</div>
+    <div class="meta"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span>${h(TYPES[p.type]?.short)}</span><span>・${billingLabel(p)}</span>${p.source_name || p.source_type ? `<span>・${h(p.source_name || p.source_type)}</span>` : ''}</div>
     <div class="t">${h(p.name)}</div>
     <div class="meta">${p.client ? h(p.client) + '・' : ''}${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     <div class="nums">
@@ -355,10 +399,20 @@ function viewProject(id) {
   if (!p) return '<div class="empty">找不到專案。<a href="#/projects">回專案列表</a></div>';
   const s = projectSums(p), used = s.done + s.sched;
   const over = used > p.est_days;
+  const periods = billingPeriods(p, s), cur = today().slice(0, 7), daily = p.billing === 'daily';
+  const rest = p.est_revenue - s.billed;
+  const billingCard = periods.length ? `<div class="card"><h2>${daily ? '月結請款' : '每月顧問費'}<span class="spacer"></span><span class="small muted">${billingLabel(p)}</span></h2>
+    <div class="tbl-wrap"><table><tr><th>計費月份</th>${daily ? '<th>完成人天</th><th>已排未完成</th>' : ''}<th>應請金額</th><th>已開立</th><th></th></tr>
+    ${periods.map((b) => `<tr class="${b.ym === cur ? 'now' : ''}"><td>${b.ym}</td>${daily ? `<td class="num">${days(b.done)}</td><td class="num">${days(b.planned)}</td>` : ''}
+      <td class="num">${money(b.due)}</td>
+      <td class="num">${b.recs.length ? `${money(b.billed)} <span class="badge s-${b.recs.every((i) => i.status === 'received') ? 'received' : 'invoiced'}">${b.recs.every((i) => i.status === 'received') ? '已收款' : ISTATUS[b.recs[0].status]}</span>${b.billed !== b.due ? ' <span class="warn" title="與應請金額不同">⚠</span>' : ''}` : '—'}</td>
+      <td>${!b.recs.length && b.due > 0 && b.ym <= cur ? `<button class="btn sm" data-act="bill-period" data-pid="${p.id}" data-ym="${b.ym}">請款</button>` : ''}</td></tr>`).join('')}
+    </table></div>
+    <p class="muted small" style="margin-bottom:0">${daily ? '應請金額 = 當月已完成人天 × 日費(半天半價)。' : ''}按「請款」會建立一筆「已請款」的收款紀錄,可再到下方收款清單修改日期、金額或標為已收款。</p></div>` : '';
   return `
   <div class="head"><a class="btn icon" href="#/projects" aria-label="返回" style="display:grid;place-items:center">‹</a><h1>${h(p.name)}</h1><button class="btn" data-act="dlg-project" data-id="${p.id}">編輯</button></div>
   <div class="card" style="border-left:4px solid ${tcolor(p.type)}">
-    <div class="chips" style="margin-bottom:8px"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span class="badge">${h(TYPES[p.type]?.label)}</span>${p.source_type ? `<span class="badge">來源:${h(p.source_type)}${p.source_name ? ' ' + h(p.source_name) : ''}</span>` : ''}${p.client ? `<span class="badge">客戶:${h(p.client)}</span>` : ''}</div>
+    <div class="chips" style="margin-bottom:8px"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span class="badge">${h(TYPES[p.type]?.label)}</span><span class="badge">${billingLabel(p)}</span>${p.source_type ? `<span class="badge">來源:${h(p.source_type)}${p.source_name ? ' ' + h(p.source_name) : ''}</span>` : ''}${p.client ? `<span class="badge">客戶:${h(p.client)}</span>` : ''}</div>
     <div class="muted small">期間 ${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     ${p.notes ? `<div style="white-space:pre-wrap;margin-top:8px">${h(p.notes)}</div>` : ''}
   </div>
@@ -368,11 +422,12 @@ function viewProject(id) {
     <div class="card"><div class="lbl">預估收入</div><div class="val">${wan(p.est_revenue)}</div><div class="sub">每人天 ${p.est_days > 0 ? money(p.est_revenue / p.est_days) : '—'}</div></div>
     <div class="card"><div class="lbl">已實收</div><div class="val">${wan(s.received)}</div><div class="sub">${pct(s.received, p.est_revenue)}・實際每人天 ${s.done > 0 ? money(s.received / s.done) : '—'}</div></div>
   </div>
+  ${billingCard}
   <div class="grid two">
     <div class="card"><h2>人天排程<span class="spacer"></span><button class="btn sm primary" data-act="dlg-entry" data-pid="${p.id}">＋ 排程</button></h2>
       <ul class="list">${s.es.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">尚未排程</li>'}</ul></div>
-    <div class="card"><h2>收款<span class="spacer"></span><button class="btn sm primary" data-act="dlg-income" data-pid="${p.id}">＋ 收款</button></h2>
-      <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || '<li class="empty" style="justify-content:center">尚無收款紀錄。未建立時,預估收入會記在專案結束月。</li>'}</ul></div>
+    <div class="card"><h2>收款<span class="spacer"></span>${p.billing === 'milestone' && rest > 0 ? `<button class="btn sm" data-act="dlg-installments" data-id="${p.id}">建立分期</button>` : ''}<button class="btn sm primary" data-act="dlg-income" data-pid="${p.id}">＋ 收款</button></h2>
+      <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || `<li class="empty" style="justify-content:center">尚無收款紀錄。${p.billing === 'milestone' ? '未建立時,預估收入會記在專案結束月;可按「建立分期」拆成數期。' : '未請款的月份會依費率自動計入預估收入。'}</li>`}</ul></div>
   </div>`;
 }
 
@@ -381,7 +436,7 @@ function incomeLi(i, showProject) {
   const p = proj(i.project_id), late = i.status !== 'received' && i.date < today();
   return `<li><div class="when">${md(i.date)}</div>
     <div class="main"><div class="t">${showProject ? `<span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}` : `<span class="num">${money(i.amount)}</span>`}</div>
-    <div class="small muted">${showProject ? `<span class="num">${money(i.amount)}</span>・` : i.date.slice(0, 4) + '・'}<span class="badge s-${late ? 'bad' : i.status}">${late ? '逾期・' : ''}${ISTATUS[i.status]}</span>${i.note ? '・' + h(i.note) : ''}</div></div>
+    <div class="small muted">${showProject ? `<span class="num">${money(i.amount)}</span>・` : i.date.slice(0, 4) + '・'}<span class="badge s-${late ? 'bad' : i.status}">${late ? '逾期・' : ''}${ISTATUS[i.status]}</span>${i.period ? `・計費 ${i.period}` : ''}${i.note ? '・' + h(i.note) : ''}</div></div>
     <div class="acts">${i.status !== 'received' ? `<button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button>` : ''}<button class="btn sm" data-act="dlg-income" data-id="${i.id}">編輯</button></div></li>`;
 }
 function viewIncome() {
@@ -412,6 +467,7 @@ function viewSettings() {
   <div class="card"><h2>目標與產能</h2><form data-form="settings">
     <div class="row2"><label class="f"><span>年度收入目標(元)</span><input name="annual_target" type="number" min="0" step="10000" inputmode="numeric" value="${setting('annual_target', 0)}"></label>
     <label class="f"><span>每月可投入人天</span><input name="monthly_capacity" type="number" min="0" max="31" step="0.5" inputmode="decimal" value="${setting('monthly_capacity', 20)}"></label></div>
+    <label class="f"><span>預設日費(元,按日計專案的預設值;半天為半價)</span><input name="default_daily_rate" type="number" min="0" step="500" inputmode="numeric" value="${setting('default_daily_rate', 12000)}"></label>
     <button class="btn primary">儲存</button></form></div>
   <div class="card"><h2>工作類型<span class="spacer"></span><button class="btn sm primary" data-act="dlg-type">＋ 類型</button></h2>
     <ul class="list">${Object.entries(TYPES).map(([k, t]) => { const n = S.data.projects.filter((p) => p.type === k).length; return `<li>
@@ -434,7 +490,7 @@ const projectOptions = (sel) => {
 };
 
 function dlgProject(id) {
-  const p = id ? proj(id) : { name: '', type: Object.keys(activeTypes())[0], source_type: SOURCES[0], source_name: '', client: '', status: 'reserved', start_date: '', end_date: '', est_days: '', est_revenue: '', notes: '' };
+  const p = id ? proj(id) : { name: '', type: Object.keys(activeTypes())[0], source_type: SOURCES[0], source_name: '', client: '', status: 'reserved', start_date: '', end_date: '', est_days: '', est_revenue: '', billing: 'milestone', rate: '', notes: '' };
   const names = [...new Set(S.data.projects.map((x) => x.source_name).filter(Boolean))];
   openDlg(`<form data-form="project" data-id="${id || ''}"><h2>${id ? '編輯專案' : '新增專案'}</h2>
     <label class="f"><span>專案名稱</span><input name="name" value="${h(p.name)}" required maxlength="200"></label>
@@ -446,9 +502,28 @@ function dlgProject(id) {
     <div class="row2"><label class="f"><span>開始日</span><input name="start_date" type="date" value="${p.start_date || ''}"></label>
       <label class="f"><span>結束日</span><input name="end_date" type="date" value="${p.end_date || ''}"></label></div>
     <div class="row2"><label class="f"><span>預估人天(0.5 為單位)</span><input name="est_days" type="number" min="0" step="0.5" inputmode="decimal" value="${p.est_days}"></label>
-      <label class="f"><span>預估收入(元)</span><input name="est_revenue" type="number" min="0" step="1" inputmode="numeric" value="${p.est_revenue}"></label></div>
+      <label class="f"><span>收款方式</span><select name="billing" data-change="billing">${opts(BILLING, p.billing)}</select></label></div>
+    <label class="f" data-b="milestone"><span>預估收入(元)</span><input name="est_revenue" type="number" min="0" step="1" inputmode="numeric" value="${p.est_revenue}"></label>
+    <label class="f" data-b="daily monthly"><span data-rate-label></span><input name="rate" type="number" min="0" step="1" inputmode="numeric" value="${p.rate || ''}"></label>
+    <p class="small muted" data-b="daily" style="margin-top:-4px">預估收入 = 預估人天 × 日費(半天半價)。每月依已完成人天結算請款。</p>
+    <p class="small muted" data-b="monthly" style="margin-top:-4px">預估收入 = 月費 × 合約月數(開始日到結束日,跨到的月份都算一個月)。</p>
     <label class="f"><span>備註</span><textarea name="notes">${h(p.notes)}</textarea></label>
     ${dlgActions(!!id, 'project-del', id)}</form>`);
+  syncBilling($('#dlg form'));
+}
+function syncBilling(form) {
+  const b = form.billing.value;
+  form.querySelectorAll('[data-b]').forEach((el) => (el.hidden = !el.dataset.b.split(' ').includes(b)));
+  $('[data-rate-label]', form).textContent = b === 'daily' ? '日費(元/天)' : '月費(元/月)';
+  if (b === 'daily' && !form.rate.value) form.rate.value = setting('default_daily_rate', 12000);
+  form.rate.required = b !== 'milestone';
+}
+function dlgInstallments(id) {
+  const p = proj(id), rest = p.est_revenue - projectSums(p).billed;
+  openDlg(`<form data-form="installments" data-id="${id}"><h2>建立分期收款</h2>
+    <p class="muted small" style="margin-top:0">將尚未排入收款的 <b class="num">${money(rest)}</b> 平均拆成數筆「預計」收款,日期依專案期間平均分布(最後一期在結束日),建立後可逐筆修改金額與日期。</p>
+    <label class="f"><span>期數</span><select name="n"><option value="1">1 期(結案一次請款)</option><option value="2">2 期</option><option value="3">3 期</option><option value="4">4 期</option></select></label>
+    ${dlgActions(false)}</form>`);
 }
 function dlgEntry({ id, pid, date }) {
   const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', content: '', note: '' };
@@ -465,13 +540,14 @@ function dlgEntry({ id, pid, date }) {
     ${dlgActions(!!id, 'entry-del', id)}</form>`);
 }
 function dlgIncome({ id, pid }) {
-  const i = id ? S.data.incomes.find((x) => x.id === id) : { project_id: pid, date: today(), amount: '', status: 'expected', note: '' };
+  const i = id ? S.data.incomes.find((x) => x.id === id) : { project_id: pid, date: today(), amount: '', status: 'expected', period: '', note: '' };
   if (!S.data.projects.length) return toast('請先建立專案');
   openDlg(`<form data-form="income" data-id="${id || ''}"><h2>${id ? '編輯收款' : '新增收款'}</h2>
     <label class="f"><span>專案</span><select name="project_id" required>${projectOptions(i.project_id)}</select></label>
     <div class="row2"><label class="f"><span>日期(預計或實際)</span><input name="date" type="date" value="${i.date}" required></label>
       <label class="f"><span>金額(元)</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" value="${i.amount}" required></label></div>
-    <label class="f"><span>狀態</span><select name="status">${opts(ISTATUS, i.status)}</select></label>
+    <div class="row2"><label class="f"><span>狀態</span><select name="status">${opts(ISTATUS, i.status)}</select></label>
+      <label class="f"><span>計費月份(按日計/月費用)</span><input name="period" type="month" value="${h(i.period)}"></label></div>
     <label class="f"><span>備註(如:第一期款)</span><input name="note" value="${h(i.note)}" maxlength="500"></label>
     ${dlgActions(!!id, 'income-del', id)}</form>`);
 }
@@ -511,6 +587,17 @@ const FORMS = {
   },
   async income(f, id) { f.project_id = Number(f.project_id); await api(id ? 'PUT' : 'POST', '/incomes' + (id ? '/' + id : ''), f); closeDlg(); await reload(); },
   async type(f, id) { await api(id ? 'PUT' : 'POST', '/types' + (id ? '/' + id : ''), { ...f, color: Number(f.color), active: !!f.active }); closeDlg(); await reload(); },
+  async installments(f, id) {
+    const p = proj(id), n = Number(f.n), rest = p.est_revenue - projectSums(p).billed;
+    if (!(rest > 0)) throw new Error('沒有尚未排入收款的金額');
+    const a = Date.parse((p.start_date || today()) + 'T00:00:00Z'), b = Math.max(a, Date.parse((p.end_date || p.start_date || today()) + 'T00:00:00Z'));
+    const each = Math.floor(rest / n);
+    for (let k = 1; k <= n; k++) {
+      const date = new Date(a + Math.round(((b - a) * k) / n / 864e5) * 864e5).toISOString().slice(0, 10);
+      await api('POST', '/incomes', { project_id: id, date, amount: k === n ? rest - each * (n - 1) : each, status: 'expected', note: n === 1 ? '結案請款' : `第 ${k}/${n} 期` });
+    }
+    closeDlg(); await reload();
+  },
   async password(f) {
     if (f.next !== f.again) throw new Error('兩次輸入的新密碼不一致');
     await api('POST', '/password', f); S.user.must_change = false; closeDlg(); toast('密碼已變更'); render();
@@ -534,6 +621,14 @@ const ACTS = {
   'dlg-entry': (d) => dlgEntry({ id: Number(d.id) || 0, pid: Number(d.pid) || 0, date: d.date }),
   'dlg-income': (d) => dlgIncome({ id: Number(d.id) || 0, pid: Number(d.pid) || 0 }),
   'dlg-password': dlgPassword,
+  'dlg-installments': (d) => dlgInstallments(Number(d.id)),
+  'bill-period': async (d) => {
+    const p = proj(Number(d.pid)), b = billingPeriods(p).find((x) => x.ym === d.ym);
+    if (!b || !(b.due > 0)) return;
+    if (!confirm(`建立 ${p.name} ${b.ym} 的請款 ${money(b.due)}?`)) return;
+    await api('POST', '/incomes', { project_id: p.id, date: today(), amount: b.due, status: 'invoiced', period: b.ym, note: p.billing === 'daily' ? `${b.ym} 月結 ${days(b.done)} 天` : `${b.ym} 顧問費` });
+    toast('已建立請款紀錄'); await reload();
+  },
   'dlg-type': (d) => dlgType(d.key || ''),
   'type-del': async (d) => { if (confirm('刪除這個工作類型?')) { await api('DELETE', '/types/' + d.id); closeDlg(); await reload(); } },
   'dlg-close': closeDlg,
@@ -566,6 +661,7 @@ document.addEventListener('change', (ev) => {
   const k = ev.target.dataset.change;
   if (k === 'year') { S.year = Number(ev.target.value); render(); }
   if (k === 'ptype') { S.pType = ev.target.value; render(); }
+  if (k === 'billing') syncBilling(ev.target.form);
 });
 $('#dlg').addEventListener('click', (ev) => { if (ev.target.id === 'dlg') closeDlg(); });
 
