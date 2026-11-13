@@ -1,0 +1,12 @@
+{
+  "name": "pms-allan",
+  "version": "1.0.0",
+  "description": "個人專案管理系統:工作全貌、人天與收入追蹤",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=22.13" }
+}

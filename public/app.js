@@ -1,0 +1,570 @@
+'use strict';
+/* PMS 前端:單頁應用,資料一次載入、統計於瀏覽器計算 */
+
+// ---------- 代碼表 ----------
+const TYPES = {
+  consult_isms: { label: 'ISMS 顧問輔導', short: 'ISMS輔導', c: 1 },
+  consult_tisax: { label: 'TISAX 顧問輔導', short: 'TISAX輔導', c: 2 },
+  audit_cert: { label: '驗證稽核(ISO 27001)', short: '驗證稽核', c: 3 },
+  audit_other: { label: '二者/內部/委商稽核', short: '二者稽核', c: 4 },
+  dev: { label: '系統開發案', short: '系統開發', c: 5 },
+  training: { label: '教育訓練', short: '教育訓練', c: 6 },
+  talk: { label: '講座邀約', short: '講座', c: 7 },
+  product: { label: '自有產品研發', short: '產品研發', c: 8 },
+};
+const SOURCES = ['驗證公司', '顧問公司', 'SI 公司', '直接客戶', '自有/其他'];
+const STATUS = { lead: '洽談中', reserved: '預定', confirmed: '已確認', active: '進行中', done: '已完成', cancelled: '取消' };
+const SLOT = { FULL: '全天', AM: '上午', PM: '下午' };
+const ESTATUS = { planned: '預定', done: '已完成' };
+const ISTATUS = { expected: '預計', invoiced: '已請款', received: '已收款' };
+
+// ---------- 工具 ----------
+const $ = (s, el = document) => el.querySelector(s);
+const h = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const today = () => ymd(new Date());
+const money = (n) => '$' + Math.round(n || 0).toLocaleString('en-US');
+const wan = (n) => (Math.abs(n) >= 10000 ? (n / 10000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + ' 萬' : money(n));
+const days = (n) => (Math.round((n || 0) * 10) / 10).toLocaleString('en-US');
+const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) + '%' : '—');
+const md = (s) => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
+const DOW = ['日', '一', '二', '三', '四', '五', '六'];
+const dow = (s) => DOW[new Date(s + 'T00:00:00').getDay()];
+const tcolor = (type) => `var(--t${(TYPES[type] || TYPES.dev).c})`;
+const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${h(k)}"${k === sel ? ' selected' : ''}>${h(v.label || v)}</option>`).join('');
+
+async function api(method, path, data) {
+  const res = await fetch('/api' + path, {
+    method, credentials: 'same-origin',
+    headers: data ? { 'Content-Type': 'application/json' } : {},
+    body: data ? JSON.stringify(data) : undefined,
+  });
+  const out = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== '/login') { S.user = null; render(); throw new Error(out.error || '請重新登入'); }
+  if (!res.ok) throw new Error(out.error || '發生錯誤');
+  return out;
+}
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2400);
+}
+
+// ---------- 狀態 ----------
+const S = {
+  user: null, data: null,
+  year: new Date().getFullYear(),
+  calMonth: today().slice(0, 7), calDay: today(),
+  pFilter: 'open', pType: '',
+};
+const proj = (id) => S.data.projects.find((p) => p.id === id);
+const live = (p) => p && p.status !== 'cancelled';
+const setting = (k, def) => { const v = Number(S.data.settings[k]); return Number.isFinite(v) && S.data.settings[k] !== undefined ? v : def; };
+
+async function reload() { S.data = await api('GET', '/data'); render(); }
+
+// ---------- 統計 ----------
+function projectSums(p) {
+  const es = S.data.entries.filter((e) => e.project_id === p.id);
+  const is = S.data.incomes.filter((i) => i.project_id === p.id);
+  const sum = (a, f) => a.reduce((t, x) => t + f(x), 0);
+  return {
+    es, is,
+    done: sum(es, (e) => (e.status === 'done' ? e.days : 0)),
+    sched: sum(es, (e) => (e.status === 'planned' ? e.days : 0)),
+    received: sum(is, (i) => (i.status === 'received' ? i.amount : 0)),
+    billed: sum(is, (i) => i.amount),
+  };
+}
+
+// 年度統計。收入預估 = 收款紀錄(依日期) + 尚未排入收款的餘額(記在專案結束月)
+// 人天 = 已完成 + 已排程 + 尚未排程的預估餘額(平均攤在專案剩餘月份)
+function yearStats(year) {
+  const mk = () => ({ fc: 0, lead: 0, actual: 0, done: 0, sched: 0, unsched: 0 });
+  const months = Array.from({ length: 12 }, mk);
+  const byType = {}, bySource = {};
+  let undatedRev = 0, undatedDays = 0;
+  const thisMonth = today().slice(0, 7);
+  const idx = (ym) => (Number(ym.slice(0, 4)) === year ? Number(ym.slice(5, 7)) - 1 : -1);
+
+  for (const p of S.data.projects) {
+    if (!live(p)) continue;
+    const lead = p.status === 'lead';
+    const ps = projectSums(p);
+    const groups = [(byType[p.type] ||= { ...mk(), n: 0 }), (bySource[p.source_type || '未分類'] ||= { ...mk(), n: 0 })];
+    let touched = false;
+    const add = (ym, key, v) => {
+      const i = idx(ym); if (i < 0 || !v) return;
+      months[i][key] += v; groups.forEach((g) => (g[key] += v)); touched = true;
+    };
+    for (const inc of ps.is) {
+      add(inc.date, lead ? 'lead' : 'fc', inc.amount);
+      if (inc.status === 'received') add(inc.date, 'actual', inc.amount);
+    }
+    const restRev = p.est_revenue - ps.billed;
+    if (restRev > 0) {
+      const anchor = p.end_date || p.start_date;
+      if (anchor) add(anchor, lead ? 'lead' : 'fc', restRev); else undatedRev += restRev;
+    }
+    for (const e of ps.es) add(e.date, e.status === 'done' ? 'done' : 'sched', e.days);
+    const restDays = p.est_days - ps.done - ps.sched;
+    if (restDays > 0 && !lead && p.status !== 'done') {
+      const a = p.start_date || p.end_date, b = p.end_date || p.start_date;
+      if (!a) undatedDays += restDays;
+      else {
+        let from = a.slice(0, 7) > thisMonth ? a.slice(0, 7) : thisMonth;
+        const to = b.slice(0, 7) > from ? b.slice(0, 7) : from;
+        const span = [];
+        for (let [y, m] = from.split('-').map(Number); `${y}-${pad(m)}` <= to; m === 12 ? (y++, m = 1) : m++) span.push(`${y}-${pad(m)}`);
+        span.forEach((ym) => add(ym, 'unsched', restDays / span.length));
+      }
+    }
+    if (touched) groups.forEach((g) => g.n++);
+  }
+  const total = months.reduce((t, m) => { for (const k in m) t[k] += m[k]; return t; }, mk());
+  return { months, total, byType, bySource, undatedRev, undatedDays };
+}
+
+function dayLoad(date) {
+  const es = S.data.entries.filter((e) => e.date === date && live(proj(e.project_id)));
+  const total = es.reduce((t, e) => t + e.days, 0);
+  const cnt = (s) => es.filter((e) => e.slot === s).length;
+  return { es, total, conflict: total > 1 || cnt('AM') > 1 || cnt('PM') > 1 };
+}
+
+// ---------- 版面 ----------
+const ICON = {
+  home: '<path d="M4 11l8-7 8 7v9H14v-6h-4v6H4z"/>',
+  cal: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8 3v4M16 3v4"/>',
+  proj: '<path d="M3 7h7l2 2h9v10H3z"/>',
+  money: '<circle cx="12" cy="12" r="8.5"/><path d="M15 9.2c-.6-1-1.7-1.4-3-1.4-1.700 0-3 .8-3 2.100 0 3 6 1.400 6 4.300 0 1.300-1.300 2.100-3 2.100-1.400 0-2.600-.5-3.200-1.600M12 6v12"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2.100 2.100M16.300 16.300l2.100 2.100M5.600 18.400l2.100-2.100M16.300 7.700l2.100-2.100"/>',
+};
+const NAV = [['', '總覽', 'home'], ['calendar', '行事曆', 'cal'], ['projects', '專案', 'proj'], ['income', '收入', 'money'], ['settings', '設定', 'gear']];
+const route = () => location.hash.replace(/^#\/?/, '').split('/');
+
+function render() {
+  const app = $('#app');
+  if (!S.user) return (app.innerHTML = viewLogin());
+  if (!S.data) return (app.innerHTML = '<main class="empty">載入中…</main>');
+  const [r, arg] = route();
+  const top = r === 'project' ? 'projects' : r;
+  const views = { '': viewDashboard, calendar: viewCalendar, projects: viewProjects, project: () => viewProject(Number(arg)), income: viewIncome, settings: viewSettings };
+  const y0 = window.scrollY;
+  app.innerHTML = `
+    <header class="topbar">
+      <div class="brand"><span>PMS</span> 工作全貌</div>
+      <nav class="nav">${NAV.map(([k, label, ic]) => `<a href="#/${k}" class="${top === k ? 'on' : ''}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.700" stroke-linecap="round" stroke-linejoin="round">${ICON[ic]}</svg>${label}</a>`).join('')}</nav>
+      <div class="spacer"></div>
+    </header>
+    <main>${S.user.must_change ? `<div class="banner"><span>⚠ 目前仍使用預設密碼,上線前請先變更。</span><span class="spacer"></span><button class="btn sm" data-act="dlg-password">變更密碼</button></div>` : ''}
+    ${(views[r] || viewDashboard)()}</main>`;
+  if (render.last === location.hash) window.scrollTo(0, y0); else window.scrollTo(0, 0);
+  render.last = location.hash;
+}
+
+function viewLogin() {
+  return `<div class="login"><div class="card">
+    <h1>PMS 工作全貌</h1><p class="muted small">個人專案・人天・收入管理</p>
+    <form data-form="login">
+      <label class="f"><span>帳號</span><input name="username" autocomplete="username" autocapitalize="none" required autofocus></label>
+      <label class="f"><span>密碼</span><input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="err"></div>
+      <button class="btn primary" style="width:100%">登入</button>
+    </form></div></div>`;
+}
+
+const yearSelect = () => {
+  const ys = new Set([S.year, new Date().getFullYear() - 1, new Date().getFullYear(), new Date().getFullYear() + 1]);
+  for (const p of S.data.projects) for (const d of [p.start_date, p.end_date]) if (d) ys.add(Number(d.slice(0, 4)));
+  return `<select class="inline" data-change="year" aria-label="年度">${[...ys].sort().map((y) => `<option${y === S.year ? ' selected' : ''}>${y}</option>`).join('')}</select>`;
+};
+
+// ---------- 圖表 ----------
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(v));
+  return [1, 2, 2.5, 5, 10].map((k) => k * p).find((x) => x >= v);
+}
+function columnChart({ max, fmt, cols, cap }) {
+  const top = niceMax(Math.max(max, cap || 0));
+  const gl = [0, 0.5, 1].map((f) => `<div class="gl" style="bottom:${f * 100}%"><span>${fmt(top * f)}</span></div>`).join('');
+  const nowIdx = S.year === new Date().getFullYear() ? new Date().getMonth() : -1;
+  return `<div class="chart">${gl}${cap ? `<div class="cap" style="bottom:${(cap / top) * 100}%"></div>` : ''}
+    <div class="cols">${cols.map((c, i) => `<div class="col${i === nowIdx ? ' now' : ''}" data-tip="${h(c.tip)}">${c.html(top)}</div>`).join('')}</div></div>
+    <div class="xlabels">${cols.map((_, i) => `<span>${i + 1}</span>`).join('')}</div>`;
+}
+
+// ---------- 總覽 ----------
+function viewDashboard() {
+  const st = yearStats(S.year), T = st.total;
+  const target = setting('annual_target', 0), capM = setting('monthly_capacity', 20);
+  const now = new Date(), isThisYear = S.year === now.getFullYear();
+  const elapsed = isThisYear ? (now - new Date(S.year, 0, 1)) / (new Date(S.year + 1, 0, 1) - new Date(S.year, 0, 1)) : S.year < now.getFullYear() ? 1 : 0;
+  const base = Math.max(target, T.fc, 1);
+  const allDays = T.done + T.sched + T.unsched;
+  const t = today();
+
+  const revChart = columnChart({
+    max: Math.max(...st.months.map((m) => Math.max(m.fc, m.actual))), fmt: (v) => (v / 10000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '萬',
+    cols: st.months.map((m, i) => ({
+      tip: `${i + 1} 月\n預估 ${money(m.fc)}\n實收 ${money(m.actual)}${m.lead ? `\n洽談中 ${money(m.lead)}` : ''}`,
+      html: (top) => `<div class="bar" style="height:${(m.fc / top) * 100}%;background:var(--seq-3)"></div><div class="bar" style="height:${(m.actual / top) * 100}%;background:var(--seq-1)"></div>`,
+    })),
+  });
+  const dayChart = columnChart({
+    max: Math.max(...st.months.map((m) => m.done + m.sched + m.unsched)), cap: capM, fmt: (v) => days(v),
+    cols: st.months.map((m, i) => {
+      const tot = m.done + m.sched + m.unsched;
+      return {
+        tip: `${i + 1} 月 合計 ${days(tot)} 天(產能 ${pct(tot, capM)})\n已完成 ${days(m.done)}\n已排程 ${days(m.sched)}\n未排程預估 ${days(m.unsched)}`,
+        html: (top) => `<div class="stack">${[['done', '--seq-1', ''], ['sched', '--seq-2', ''], ['unsched', '--seq-3', ' hatch']].filter(([k]) => m[k] > 0)
+          .map(([k, c, cls]) => `<i class="${cls}" style="height:calc(${(m[k] / top) * 100}% - 2px);background-color:var(${c})"></i>`).join('')}</div>`,
+      };
+    }),
+  });
+
+  const breakdown = (title, groups, labelOf, colorOf) => {
+    const rows = Object.entries(groups).map(([k, g]) => ({ k, g, d: g.done + g.sched + g.unsched })).filter((r) => r.g.fc || r.d || r.g.actual || r.g.lead).sort((a, b) => b.g.fc - a.g.fc);
+    const maxFc = Math.max(1, ...rows.map((r) => r.g.fc));
+    return `<div class="card"><h2>${title}</h2>${rows.length ? `<div class="tbl-wrap"><table>
+      <tr><th>${title.slice(0, 2)}</th><th>案數</th><th>預估收入</th><th>占比</th><th>實收</th><th>人天</th><th>每人天產值</th></tr>
+      ${rows.map(({ k, g, d }) => `<tr><td><span class="dot" style="background:${colorOf(k)}"></span>${h(labelOf(k))}</td><td class="num">${g.n}</td>
+        <td class="num"><span class="hbar" style="width:${(g.fc / maxFc) * 60}px;background:${colorOf(k)}"></span>${money(g.fc)}</td>
+        <td class="num">${pct(g.fc, T.fc)}</td><td class="num">${money(g.actual)}</td><td class="num">${days(d)}</td>
+        <td class="num">${d > 0 ? money(g.fc / d) : '—'}</td></tr>`).join('')}
+      <tr class="total"><td>合計</td><td></td><td class="num">${money(T.fc)}</td><td></td><td class="num">${money(T.actual)}</td><td class="num">${days(allDays)}</td><td class="num">${allDays > 0 ? money(T.fc / allDays) : '—'}</td></tr>
+      </table></div>` : '<div class="empty">本年度尚無資料</div>'}</div>`;
+  };
+
+  // 待處理事項
+  const conflicts = [...new Set(S.data.entries.filter((e) => e.date >= t).map((e) => e.date))].filter((d) => dayLoad(d).conflict).sort();
+  const stale = S.data.entries.filter((e) => e.date < t && e.status === 'planned' && live(proj(e.project_id)));
+  const overdue = S.data.incomes.filter((i) => i.date < t && i.status !== 'received' && live(proj(i.project_id)));
+  const until = ymd(new Date(Date.now() + 21 * 864e5));
+  const upcoming = S.data.entries.filter((e) => e.date >= t && e.date <= until && live(proj(e.project_id)));
+
+  return `
+  <div class="head"><h1>${S.year} 年度總覽</h1>${yearSelect()}<button class="btn primary" data-act="dlg-project">＋ 專案</button></div>
+  <div class="grid kpi">
+    <div class="card"><div class="lbl">預估年收入</div><div class="val">${wan(T.fc)}</div>
+      <div class="sub">${target ? `年度目標 ${wan(target)}・達成 ${pct(T.fc, target)}` : '<a href="#/settings">設定年度目標</a>'}</div></div>
+    <div class="card"><div class="lbl">已實現收入</div><div class="val">${wan(T.actual)}</div>
+      <div class="sub">占預估 ${pct(T.actual, T.fc)}${target ? `・占目標 ${pct(T.actual, target)}` : ''}</div></div>
+    <div class="card"><div class="lbl">投入人天(完成/全部)</div><div class="val">${days(T.done)}<span class="muted" style="font-size:15px"> / ${days(allDays)}</span></div>
+      <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}</div></div>
+    <div class="card"><div class="lbl">每人天產值(預估)</div><div class="val">${allDays > 0 ? money(T.fc / allDays) : '—'}</div>
+      <div class="sub">洽談中潛在 ${wan(T.lead)}</div></div>
+  </div>
+  <div class="card"><h2>收入進度</h2>
+    <div class="legend"><span><i style="background:var(--seq-1)"></i>已實收 ${money(T.actual)}</span><span><i style="background:var(--seq-3)"></i>預估 ${money(T.fc)}</span>
+      ${target ? `<span>目標 ${money(target)}</span>` : ''}${isThisYear ? `<span><i style="background:var(--text);width:2px;border-radius:0"></i>年度時間進度 ${Math.round(elapsed * 100)}%</span>` : ''}</div>
+    <div class="meter" data-tip="已實收 ${money(T.actual)}\n預估 ${money(T.fc)}${target ? `\n目標 ${money(target)}` : ''}"><i class="fc" style="width:${(T.fc / base) * 100}%"></i><i class="act" style="width:${(T.actual / base) * 100}%"></i>${isThisYear ? `<b style="left:${elapsed * 100}%"></b>` : ''}</div>
+    <div class="small muted">${target && T.fc < target ? `距年度目標尚差 ${money(target - T.fc)} 的案源。` : ''}${st.undatedRev ? ` 另有 ${money(st.undatedRev)} 預估收入的專案未填日期,未計入年度。` : ''}${st.undatedDays ? ` 另有 ${days(st.undatedDays)} 人天的專案未填日期。` : ''}</div>
+  </div>
+  <div class="grid two">
+    <div class="card"><h2>每月收入</h2><div class="legend"><span><i style="background:var(--seq-3)"></i>預估</span><span><i style="background:var(--seq-1)"></i>實收</span></div>${revChart}</div>
+    <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
+  </div>
+  <div class="grid two">
+    <div class="card"><h2>待處理</h2><ul class="list">
+      ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
+      ${stale.length ? `<li><span class="badge s-lead">待確認</span><div class="main">${stale.length} 筆過去的排程尚未確認(共 ${days(stale.reduce((s, e) => s + e.days, 0))} 天)</div><div class="acts"><button class="btn sm" data-act="confirm-stale">全部標為完成</button></div></li>` : ''}
+      ${overdue.map((i) => `<li><span class="badge s-bad">逾期未收</span><div class="main"><div class="t">${h(proj(i.project_id).name)}</div><div class="small muted">${i.date}・${money(i.amount)}・${ISTATUS[i.status]}</div></div><div class="acts"><button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button></div></li>`).join('')}
+      ${!conflicts.length && !stale.length && !overdue.length ? '<li class="empty" style="justify-content:center">沒有待處理事項</li>' : ''}
+    </ul></div>
+    <div class="card"><h2>未來 3 週行程<span class="spacer"></span><a class="small" href="#/calendar">行事曆 ›</a></h2><ul class="list">
+      ${upcoming.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
+    </ul></div>
+  </div>
+  ${breakdown('類型分析', st.byType, (k) => TYPES[k]?.label || k, tcolor)}
+  ${breakdown('來源分析', st.bySource, (k) => k, () => 'var(--text-3)')}
+  ${monthTable(st, capM)}`;
+}
+
+function monthTable(st, capM) {
+  const nowIdx = S.year === new Date().getFullYear() ? new Date().getMonth() : -1, T = st.total;
+  const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched) * 10) / 10; return `<tr class="${cls}"><td>${label}</td><td class="num">${money(m.fc)}</td><td class="num">${money(m.actual)}</td><td class="num">${m.lead ? money(m.lead) : '—'}</td><td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
+  return `<div class="card"><h2>月統計表</h2><div class="tbl-wrap"><table>
+    <tr><th>月份</th><th>預估收入</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>產能占用</th></tr>
+    ${st.months.map((m, i) => row(`${i + 1} 月`, m, i === nowIdx ? 'now' : '', capM)).join('')}${row('全年', T, 'total', capM * 12)}
+  </table></div></div>`;
+}
+
+function entryLi(e, showDate) {
+  const p = proj(e.project_id);
+  return `<li><div class="when">${showDate ? `${md(e.date)}(${dow(e.date)})` : SLOT[e.slot]}</div>
+    <div class="main"><div class="t"><span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}</div>
+    <div class="small muted">${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・' + h(e.note) : ''}</div></div>
+    <div class="acts">${e.status === 'planned' && e.date <= today() ? `<button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button>` : ''}
+    <button class="btn sm" data-act="dlg-entry" data-id="${e.id}">編輯</button></div></li>`;
+}
+
+// ---------- 行事曆 ----------
+function viewCalendar() {
+  const [y, m] = S.calMonth.split('-').map(Number);
+  const first = new Date(y, m - 1, 1), start = new Date(y, m - 1, 1 - first.getDay());
+  const t = today();
+  let cells = '', total = 0;
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), ds = ymd(d);
+    if (i === 35 && d.getMonth() !== m - 1) break;
+    if (d.getMonth() !== m - 1) { cells += '<div class="cal-cell out"></div>'; continue; }
+    const L = dayLoad(ds); total += L.total;
+    cells += `<button class="cal-cell${ds === t ? ' today' : ''}${ds === S.calDay ? ' sel' : ''}${L.conflict ? ' conflict' : ''}${d.getDay() % 6 === 0 ? ' we' : ''}" data-act="cal-day" data-date="${ds}" aria-label="${ds} 已排 ${L.total} 天">
+      <div class="d"><b>${d.getDate()}</b>${L.conflict ? '<span class="x">⚠</span>' : ''}</div>
+      ${L.es.map((e) => { const p = proj(e.project_id); return `<div class="ev ${e.status} ${e.slot}${e.slot === 'FULL' ? '' : ' half'}" style="--c:${tcolor(p.type)}">${e.slot === 'FULL' ? '' : SLOT[e.slot][0] + ' '}${h(p.name)}</div>`; }).join('')}
+    </button>`;
+  }
+  const capM = setting('monthly_capacity', 20), L = dayLoad(S.calDay);
+  const usedTypes = [...new Set(S.data.entries.filter((e) => e.date.startsWith(S.calMonth)).map((e) => proj(e.project_id)?.type))].filter(Boolean);
+  return `
+  <div class="head"><h1>${y} 年 ${m} 月</h1>
+    <button class="btn icon" data-act="cal-prev" aria-label="上個月">‹</button><button class="btn" data-act="cal-today">今天</button><button class="btn icon" data-act="cal-next" aria-label="下個月">›</button>
+    <button class="btn primary" data-act="dlg-entry" data-date="${S.calDay}">＋ 排程</button></div>
+  <div class="small muted" style="margin-bottom:8px">本月已排 <b class="${total > capM ? 'bad' : ''}">${days(total)}</b> / 產能 ${days(capM)} 天。實色=已完成,虛框(手機為淡色)=預定。</div>
+  <div class="cal">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}${cells}</div>
+  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${TYPES[k].short}</span>`).join('')}</div>
+  <div class="card" style="margin-top:8px"><h2>${md(S.calDay)}(${dow(S.calDay)})${L.conflict ? '<span class="badge s-bad">⚠ 時間衝突</span>' : ''}<span class="spacer"></span><span class="small muted">已排 ${days(L.total)} 天</span></h2>
+    <ul class="list">${L.es.map((e) => entryLi(e, false)).join('') || '<li class="empty" style="justify-content:center">這天沒有排程</li>'}</ul></div>`;
+}
+
+// ---------- 專案 ----------
+const P_FILTERS = { open: ['進行中', ['reserved', 'confirmed', 'active']], lead: ['洽談中', ['lead']], done: ['已完成', ['done']], all: ['全部', Object.keys(STATUS)] };
+function viewProjects() {
+  const list = S.data.projects.filter((p) => P_FILTERS[S.pFilter][1].includes(p.status) && (!S.pType || p.type === S.pType))
+    .sort((a, b) => (a.start_date || '9999').localeCompare(b.start_date || '9999'));
+  return `
+  <div class="head"><h1>專案</h1><button class="btn primary" data-act="dlg-project">＋ 專案</button></div>
+  <div class="head"><div class="chips">${Object.entries(P_FILTERS).map(([k, [label, sts]]) => `<button class="chip${S.pFilter === k ? ' on' : ''}" data-act="p-filter" data-k="${k}">${label} ${S.data.projects.filter((p) => sts.includes(p.status)).length}</button>`).join('')}</div>
+    <span style="flex:1"></span><select class="inline" data-change="ptype" aria-label="工作類型"><option value="">全部類型</option>${opts(TYPES, S.pType)}</select></div>
+  <div class="pgrid">${list.map(projectCard).join('')}</div>
+  ${list.length ? '' : '<div class="empty">沒有符合的專案。按「＋ 專案」建立第一筆。</div>'}`;
+}
+function projectCard(p) {
+  const s = projectSums(p), used = s.done + s.sched;
+  return `<a class="pcard" href="#/project/${p.id}" style="--c:${tcolor(p.type)}">
+    <div class="meta"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span>${TYPES[p.type]?.short}</span>${p.source_name || p.source_type ? `<span>・${h(p.source_name || p.source_type)}</span>` : ''}</div>
+    <div class="t">${h(p.name)}</div>
+    <div class="meta">${p.client ? h(p.client) + '・' : ''}${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
+    <div class="nums">
+      <div>人天 完成/排程/預估<b>${days(s.done)} / ${days(used)} / ${days(p.est_days)}</b><div class="meter"><i class="fc" style="width:${Math.min(100, (used / Math.max(p.est_days, used, 0.5)) * 100)}%"></i><i class="act" style="width:${Math.min(100, (s.done / Math.max(p.est_days, used, 0.5)) * 100)}%"></i></div></div>
+      <div>收入 實收/預估<b>${wan(s.received)} / ${wan(p.est_revenue)}</b><div class="meter"><i class="act" style="width:${Math.min(100, (s.received / Math.max(p.est_revenue, s.received, 1)) * 100)}%"></i></div></div>
+    </div></a>`;
+}
+function viewProject(id) {
+  const p = proj(id);
+  if (!p) return '<div class="empty">找不到專案。<a href="#/projects">回專案列表</a></div>';
+  const s = projectSums(p), used = s.done + s.sched;
+  const over = used > p.est_days;
+  return `
+  <div class="head"><a class="btn icon" href="#/projects" aria-label="返回" style="display:grid;place-items:center">‹</a><h1>${h(p.name)}</h1><button class="btn" data-act="dlg-project" data-id="${p.id}">編輯</button></div>
+  <div class="card" style="border-left:4px solid ${tcolor(p.type)}">
+    <div class="chips" style="margin-bottom:8px"><span class="badge s-${p.status}">${STATUS[p.status]}</span><span class="badge">${TYPES[p.type]?.label}</span>${p.source_type ? `<span class="badge">來源:${h(p.source_type)}${p.source_name ? ' ' + h(p.source_name) : ''}</span>` : ''}${p.client ? `<span class="badge">客戶:${h(p.client)}</span>` : ''}</div>
+    <div class="muted small">期間 ${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
+    ${p.notes ? `<div style="white-space:pre-wrap;margin-top:8px">${h(p.notes)}</div>` : ''}
+  </div>
+  <div class="grid kpi">
+    <div class="card"><div class="lbl">預估人天</div><div class="val">${days(p.est_days)}</div><div class="sub ${over ? 'bad' : ''}">${over ? `⚠ 已排超出 ${days(used - p.est_days)} 天` : `尚未排程 ${days(p.est_days - used)} 天`}</div></div>
+    <div class="card"><div class="lbl">實際人天(完成/已排)</div><div class="val">${days(s.done)}<span class="muted" style="font-size:15px"> / ${days(used)}</span></div><div class="sub">完成 ${pct(s.done, p.est_days)}</div></div>
+    <div class="card"><div class="lbl">預估收入</div><div class="val">${wan(p.est_revenue)}</div><div class="sub">每人天 ${p.est_days > 0 ? money(p.est_revenue / p.est_days) : '—'}</div></div>
+    <div class="card"><div class="lbl">已實收</div><div class="val">${wan(s.received)}</div><div class="sub">${pct(s.received, p.est_revenue)}・實際每人天 ${s.done > 0 ? money(s.received / s.done) : '—'}</div></div>
+  </div>
+  <div class="grid two">
+    <div class="card"><h2>人天排程<span class="spacer"></span><button class="btn sm primary" data-act="dlg-entry" data-pid="${p.id}">＋ 排程</button></h2>
+      <ul class="list">${s.es.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">尚未排程</li>'}</ul></div>
+    <div class="card"><h2>收款<span class="spacer"></span><button class="btn sm primary" data-act="dlg-income" data-pid="${p.id}">＋ 收款</button></h2>
+      <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || '<li class="empty" style="justify-content:center">尚無收款紀錄。未建立時,預估收入會記在專案結束月。</li>'}</ul></div>
+  </div>`;
+}
+
+// ---------- 收入 ----------
+function incomeLi(i, showProject) {
+  const p = proj(i.project_id), late = i.status !== 'received' && i.date < today();
+  return `<li><div class="when">${md(i.date)}</div>
+    <div class="main"><div class="t">${showProject ? `<span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}` : `<span class="num">${money(i.amount)}</span>`}</div>
+    <div class="small muted">${showProject ? `<span class="num">${money(i.amount)}</span>・` : i.date.slice(0, 4) + '・'}<span class="badge s-${late ? 'bad' : i.status}">${late ? '逾期・' : ''}${ISTATUS[i.status]}</span>${i.note ? '・' + h(i.note) : ''}</div></div>
+    <div class="acts">${i.status !== 'received' ? `<button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button>` : ''}<button class="btn sm" data-act="dlg-income" data-id="${i.id}">編輯</button></div></li>`;
+}
+function viewIncome() {
+  const st = yearStats(S.year), capM = setting('monthly_capacity', 20);
+  const list = S.data.incomes.filter((i) => i.date.startsWith(String(S.year)) && live(proj(i.project_id)));
+  const sum = (st_) => list.filter((i) => st_.includes(i.status)).reduce((t, i) => t + i.amount, 0);
+  let body = '';
+  for (let m = 1; m <= 12; m++) {
+    const rows = list.filter((i) => Number(i.date.slice(5, 7)) === m);
+    if (rows.length) body += `<div class="card"><h2>${m} 月<span class="spacer"></span><span class="small muted num">${money(rows.reduce((t, i) => t + i.amount, 0))}</span></h2><ul class="list">${rows.map((i) => incomeLi(i, true)).join('')}</ul></div>`;
+  }
+  return `
+  <div class="head"><h1>${S.year} 收入</h1>${yearSelect()}<button class="btn primary" data-act="dlg-income">＋ 收款</button></div>
+  <div class="grid kpi">
+    <div class="card"><div class="lbl">預估年收入</div><div class="val">${wan(st.total.fc)}</div><div class="sub">含未排入收款的專案餘額</div></div>
+    <div class="card"><div class="lbl">已收款</div><div class="val">${wan(sum(['received']))}</div><div class="sub">占預估 ${pct(st.total.actual, st.total.fc)}</div></div>
+    <div class="card"><div class="lbl">已請款未收</div><div class="val">${wan(sum(['invoiced']))}</div><div class="sub">應收帳款</div></div>
+    <div class="card"><div class="lbl">預計收款</div><div class="val">${wan(sum(['expected']))}</div><div class="sub">尚未請款</div></div>
+  </div>
+  ${body || '<div class="card empty">本年度尚無收款紀錄</div>'}
+  ${monthTable(st, capM)}`;
+}
+
+// ---------- 設定 ----------
+function viewSettings() {
+  return `
+  <div class="head"><h1>設定</h1></div>
+  <div class="card"><h2>目標與產能</h2><form data-form="settings">
+    <div class="row2"><label class="f"><span>年度收入目標(元)</span><input name="annual_target" type="number" min="0" step="10000" inputmode="numeric" value="${setting('annual_target', 0)}"></label>
+    <label class="f"><span>每月可投入人天</span><input name="monthly_capacity" type="number" min="0" max="31" step="0.5" inputmode="decimal" value="${setting('monthly_capacity', 20)}"></label></div>
+    <button class="btn primary">儲存</button></form></div>
+  <div class="card"><h2>帳號</h2><p class="muted small" style="margin-top:0">登入帳號:${h(S.user.username)}</p>
+    <div class="chips"><button class="btn" data-act="dlg-password">變更密碼</button><button class="btn" data-act="logout">登出</button></div></div>
+  <div class="card"><h2>資料備份</h2><p class="muted small" style="margin-top:0">匯出全部專案、排程與收款為 JSON 檔。</p><a class="btn" href="/api/export" download style="display:inline-block">下載備份</a></div>`;
+}
+
+// ---------- 對話框 ----------
+function openDlg(html) { const d = $('#dlg'); d.innerHTML = html; if (!d.open) d.showModal(); }
+const closeDlg = () => $('#dlg').close();
+const dlgActions = (isEdit, delAct, id) => `<div class="err"></div><div class="dlg-actions">${isEdit ? `<button type="button" class="btn danger" data-act="${delAct}" data-id="${id}">刪除</button>` : ''}<span class="spacer"></span><button type="button" class="btn" data-act="dlg-close">取消</button><button class="btn primary">儲存</button></div>`;
+const projectOptions = (sel) => {
+  const ps = S.data.projects.filter((p) => p.id === sel || !['done', 'cancelled'].includes(p.status));
+  return ps.map((p) => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${h(p.name)}</option>`).join('');
+};
+
+function dlgProject(id) {
+  const p = id ? proj(id) : { name: '', type: 'consult_isms', source_type: SOURCES[0], source_name: '', client: '', status: 'reserved', start_date: '', end_date: '', est_days: '', est_revenue: '', notes: '' };
+  const names = [...new Set(S.data.projects.map((x) => x.source_name).filter(Boolean))];
+  openDlg(`<form data-form="project" data-id="${id || ''}"><h2>${id ? '編輯專案' : '新增專案'}</h2>
+    <label class="f"><span>專案名稱</span><input name="name" value="${h(p.name)}" required maxlength="200"></label>
+    <div class="row2"><label class="f"><span>工作類型</span><select name="type">${opts(TYPES, p.type)}</select></label>
+      <label class="f"><span>狀態</span><select name="status">${opts(STATUS, p.status)}</select></label></div>
+    <div class="row2"><label class="f"><span>來源類別</span><select name="source_type">${SOURCES.map((s) => `<option${s === p.source_type ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
+      <label class="f"><span>來源名稱(如 SGS)</span><input name="source_name" value="${h(p.source_name)}" list="srcnames"><datalist id="srcnames">${names.map((n) => `<option value="${h(n)}">`).join('')}</datalist></label></div>
+    <label class="f"><span>最終客戶</span><input name="client" value="${h(p.client)}"></label>
+    <div class="row2"><label class="f"><span>開始日</span><input name="start_date" type="date" value="${p.start_date || ''}"></label>
+      <label class="f"><span>結束日</span><input name="end_date" type="date" value="${p.end_date || ''}"></label></div>
+    <div class="row2"><label class="f"><span>預估人天(0.5 為單位)</span><input name="est_days" type="number" min="0" step="0.5" inputmode="decimal" value="${p.est_days}"></label>
+      <label class="f"><span>預估收入(元)</span><input name="est_revenue" type="number" min="0" step="1" inputmode="numeric" value="${p.est_revenue}"></label></div>
+    <label class="f"><span>備註</span><textarea name="notes">${h(p.notes)}</textarea></label>
+    ${dlgActions(!!id, 'project-del', id)}</form>`);
+}
+function dlgEntry({ id, pid, date }) {
+  const e = id ? S.data.entries.find((x) => x.id === id) : { project_id: pid, date: date || today(), slot: 'FULL', status: 'planned', note: '' };
+  if (!S.data.projects.some((p) => !['done', 'cancelled'].includes(p.status)) && !id) return toast('請先建立專案');
+  openDlg(`<form data-form="entry" data-id="${id || ''}"><h2>${id ? '編輯排程' : '新增排程'}</h2>
+    <label class="f"><span>專案</span><select name="project_id" required>${projectOptions(e.project_id)}</select></label>
+    <div class="row2"><label class="f"><span>${id ? '日期' : '起日'}</span><input name="date" type="date" value="${e.date}" required></label>
+      ${id ? '' : '<label class="f"><span>迄日(連續多天時填)</span><input name="to" type="date"></label>'}</div>
+    ${id ? '' : '<label class="chk"><input type="checkbox" name="skip_weekends" checked>多天時略過週末</label>'}
+    <div class="row2"><label class="f"><span>時段</span><select name="slot">${opts({ FULL: '全天(1 天)', AM: '上午(0.5 天)', PM: '下午(0.5 天)' }, e.slot)}</select></label>
+      <label class="f"><span>狀態</span><select name="status">${opts(ESTATUS, e.status)}</select></label></div>
+    <label class="f"><span>備註</span><input name="note" value="${h(e.note)}" maxlength="500"></label>
+    ${dlgActions(!!id, 'entry-del', id)}</form>`);
+}
+function dlgIncome({ id, pid }) {
+  const i = id ? S.data.incomes.find((x) => x.id === id) : { project_id: pid, date: today(), amount: '', status: 'expected', note: '' };
+  if (!S.data.projects.length) return toast('請先建立專案');
+  openDlg(`<form data-form="income" data-id="${id || ''}"><h2>${id ? '編輯收款' : '新增收款'}</h2>
+    <label class="f"><span>專案</span><select name="project_id" required>${projectOptions(i.project_id)}</select></label>
+    <div class="row2"><label class="f"><span>日期(預計或實際)</span><input name="date" type="date" value="${i.date}" required></label>
+      <label class="f"><span>金額(元)</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" value="${i.amount}" required></label></div>
+    <label class="f"><span>狀態</span><select name="status">${opts(ISTATUS, i.status)}</select></label>
+    <label class="f"><span>備註(如:第一期款)</span><input name="note" value="${h(i.note)}" maxlength="500"></label>
+    ${dlgActions(!!id, 'income-del', id)}</form>`);
+}
+function dlgPassword() {
+  openDlg(`<form data-form="password"><h2>變更密碼</h2>
+    <input name="username" autocomplete="username" value="${h(S.user.username)}" hidden>
+    <label class="f"><span>目前密碼</span><input name="current" type="password" autocomplete="current-password" required></label>
+    <label class="f"><span>新密碼(至少 8 碼)</span><input name="next" type="password" autocomplete="new-password" minlength="8" required></label>
+    <label class="f"><span>再次輸入新密碼</span><input name="again" type="password" autocomplete="new-password" minlength="8" required></label>
+    ${dlgActions(false)}</form>`);
+}
+
+// ---------- 事件 ----------
+const FORMS = {
+  async login(f) { S.user = await api('POST', '/login', f); await reload(); },
+  async settings(f) { await api('PUT', '/settings', f); toast('已儲存'); await reload(); },
+  async project(f, id) {
+    const p = await api(id ? 'PUT' : 'POST', '/projects' + (id ? '/' + id : ''), f);
+    closeDlg(); if (!id) location.hash = '#/project/' + p.id; await reload();
+  },
+  async entry(f, id) {
+    f.project_id = Number(f.project_id); f.skip_weekends = !!f.skip_weekends;
+    if (id) await api('PUT', '/entries/' + id, f);
+    else if (f.to && f.to !== f.date) { const r = await api('POST', '/entries/batch', { ...f, from: f.date }); toast(`已建立 ${r.length} 筆排程`); }
+    else await api('POST', '/entries', f);
+    S.calDay = f.date; closeDlg(); await reload();
+  },
+  async income(f, id) { f.project_id = Number(f.project_id); await api(id ? 'PUT' : 'POST', '/incomes' + (id ? '/' + id : ''), f); closeDlg(); await reload(); },
+  async password(f) {
+    if (f.next !== f.again) throw new Error('兩次輸入的新密碼不一致');
+    await api('POST', '/password', f); S.user.must_change = false; closeDlg(); toast('密碼已變更'); render();
+  },
+};
+document.addEventListener('submit', async (ev) => {
+  const form = ev.target.closest('[data-form]'); if (!form) return;
+  ev.preventDefault();
+  const err = $('.err', form), btn = $('button.primary', form);
+  if (err) err.textContent = '';
+  if (btn) btn.disabled = true;
+  try { await FORMS[form.dataset.form](Object.fromEntries(new FormData(form)), Number(form.dataset.id) || 0); }
+  catch (e) { if (err && form.isConnected) err.textContent = e.message; else toast(e.message); }
+  finally { if (btn) btn.disabled = false; }
+});
+
+const shiftMonth = (n) => { const [y, m] = S.calMonth.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); S.calMonth = ymd(d).slice(0, 7); S.calDay = S.calMonth === today().slice(0, 7) ? today() : S.calMonth + '-01'; render(); };
+const putRow = (kind, row, patch) => api('PUT', `/${kind}/${row.id}`, { ...row, ...patch }).then(reload);
+const ACTS = {
+  'dlg-project': (d) => dlgProject(Number(d.id) || 0),
+  'dlg-entry': (d) => dlgEntry({ id: Number(d.id) || 0, pid: Number(d.pid) || 0, date: d.date }),
+  'dlg-income': (d) => dlgIncome({ id: Number(d.id) || 0, pid: Number(d.pid) || 0 }),
+  'dlg-password': dlgPassword,
+  'dlg-close': closeDlg,
+  'cal-day': (d) => { S.calDay = d.date; render(); },
+  'cal-prev': () => shiftMonth(-1), 'cal-next': () => shiftMonth(1),
+  'cal-today': () => { S.calMonth = today().slice(0, 7); S.calDay = today(); render(); },
+  'goto-day': (d) => { S.calDay = d.date; S.calMonth = d.date.slice(0, 7); location.hash = '#/calendar'; },
+  'p-filter': (d) => { S.pFilter = d.k; render(); },
+  'entry-done': (d) => putRow('entries', S.data.entries.find((e) => e.id === Number(d.id)), { status: 'done' }),
+  'income-received': (d) => putRow('incomes', S.data.incomes.find((i) => i.id === Number(d.id)), { status: 'received' }),
+  'confirm-stale': async () => {
+    const t = today(), list = S.data.entries.filter((e) => e.date < t && e.status === 'planned' && live(proj(e.project_id)));
+    if (!confirm(`將 ${list.length} 筆過去的排程標為已完成?`)) return;
+    for (const e of list) await api('PUT', '/entries/' + e.id, { ...e, status: 'done' });
+    await reload();
+  },
+  'entry-del': async (d) => { if (confirm('刪除這筆排程?')) { await api('DELETE', '/entries/' + d.id); closeDlg(); await reload(); } },
+  'income-del': async (d) => { if (confirm('刪除這筆收款?')) { await api('DELETE', '/incomes/' + d.id); closeDlg(); await reload(); } },
+  'project-del': async (d) => {
+    if (!confirm('刪除專案會一併刪除其排程與收款紀錄,確定?(若只是不做了,建議改狀態為「取消」)')) return;
+    await api('DELETE', '/projects/' + d.id); closeDlg(); location.hash = '#/projects'; await reload();
+  },
+  logout: async () => { await api('POST', '/logout', {}); S.user = null; S.data = null; render(); },
+};
+document.addEventListener('click', async (ev) => {
+  const el = ev.target.closest('[data-act]'); if (!el) return;
+  try { await ACTS[el.dataset.act](el.dataset); } catch (e) { toast(e.message); }
+});
+document.addEventListener('change', (ev) => {
+  const k = ev.target.dataset.change;
+  if (k === 'year') { S.year = Number(ev.target.value); render(); }
+  if (k === 'ptype') { S.pType = ev.target.value; render(); }
+});
+$('#dlg').addEventListener('click', (ev) => { if (ev.target.id === 'dlg') closeDlg(); });
+
+// 圖表提示
+const tip = $('#tip');
+document.addEventListener('pointerover', (ev) => {
+  const el = ev.target.closest('[data-tip]');
+  if (!el) return (tip.hidden = true);
+  tip.textContent = el.dataset.tip; tip.hidden = false;
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth, hh = tip.offsetHeight;
+  tip.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + 'px';
+  tip.style.top = (r.top - hh - 6 > 0 ? r.top - hh - 6 : r.top + 24) + 'px';
+});
+window.addEventListener('scroll', () => (tip.hidden = true), { passive: true });
+window.addEventListener('hashchange', render);
+
+(async () => {
+  try { S.user = await api('GET', '/me'); await reload(); } catch { render(); }
+})();
