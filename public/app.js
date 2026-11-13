@@ -47,7 +47,7 @@ const S = {
   user: null, data: null,
   year: new Date().getFullYear(),
   calMonth: today().slice(0, 7), calDay: today(),
-  pFilter: 'open', pType: '',
+  pFilter: 'open', pType: '', dim: 'type',
 };
 const proj = (id) => S.data.projects.find((p) => p.id === id);
 const live = (p) => p && p.status !== 'cancelled';
@@ -108,12 +108,16 @@ function unbilledPeriods() {
   return out.sort((a, b) => a.ym.localeCompare(b.ym));
 }
 
-// 年度統計。收入預估 = 收款紀錄(依日期) + 尚未排入收款的餘額(記在專案結束月)
-// 人天 = 已完成 + 已排程 + 尚未排程的預估餘額(平均攤在專案剩餘月份)
+// 年度統計。收入依「工作發生的月份」歸屬(有計費月份的收款紀錄歸該月,其餘依收款日期):
+//   earned 已實現 = 已完成工作的價值(按日計:完成人天×日費;月費:已到期月份;分期:已請款/已收款的期款)
+//   pre    已排預收 = 已排程未完成的人天、合約尚未到期的月份、分期的預計收款
+//   unrev  未排預估 = 預估人天/預估收入中尚未排入的餘額
+//   fc 預估合計 = earned + pre + unrev;billed 已請款(含已收);actual 實收;lead 洽談中(不計入 fc)
+// 人天 = done 已完成 + sched 已排程 + unsched 未排程(平均攤在專案剩餘月份);free 義工
 function yearStats(year) {
-  const mk = () => ({ fc: 0, lead: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0 });
+  const mk = () => ({ fc: 0, earned: 0, pre: 0, unrev: 0, lead: 0, billed: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0 });
   const months = Array.from({ length: 12 }, mk);
-  const byType = {}, bySource = {};
+  const dims = { type: {}, source: {}, sourceName: {}, project: {} };
   let undatedRev = 0, undatedDays = 0;
   const thisMonth = today().slice(0, 7);
   const idx = (ym) => (Number(ym.slice(0, 4)) === year ? Number(ym.slice(5, 7)) - 1 : -1);
@@ -122,30 +126,48 @@ function yearStats(year) {
     if (!live(p)) continue;
     const lead = p.status === 'lead';
     const ps = projectSums(p);
-    const groups = [(byType[p.type] ||= { ...mk(), n: 0 }), (bySource[p.source_type || '未分類'] ||= { ...mk(), n: 0 })];
+    const groups = [[dims.type, p.type], [dims.source, p.source_type || '未分類'], [dims.sourceName, p.source_name || '(未填來源名稱)'], [dims.project, p.id]]
+      .map(([d, k]) => (d[k] ||= { ...mk(), n: 0 }));
     let touched = false;
     const add = (ym, key, v) => {
       const i = idx(ym); if (i < 0 || !v) return;
       months[i][key] += v; groups.forEach((g) => (g[key] += v)); touched = true;
     };
+    const rev = (ym, key, v) => { if (lead) add(ym, 'lead', v); else { add(ym, key, v); add(ym, 'fc', v); } };
+
+    // 收款紀錄
+    const byPeriod = {};
     for (const inc of ps.is) {
-      add(inc.date, lead ? 'lead' : 'fc', inc.amount);
-      if (inc.status === 'received') add(inc.date, 'actual', inc.amount);
+      const when = inc.period || inc.date;
+      if (inc.status !== 'expected') add(when, 'billed', inc.amount);
+      if (inc.status === 'received') add(when, 'actual', inc.amount);
+      if (inc.period) byPeriod[inc.period] = (byPeriod[inc.period] || 0) + inc.amount;
+      else rev(inc.date, inc.status === 'expected' ? 'pre' : 'earned', inc.amount);
     }
-    // 尚未開立收款紀錄的部分:依收款方式推算
-    const fcKey = lead ? 'lead' : 'fc';
-    const covered = new Set(ps.is.map((i) => i.period).filter(Boolean));
+    // 依收款方式推算各月收入
     if (p.billing === 'daily') {
-      for (const e of ps.es) if (e.billable && !covered.has(e.date.slice(0, 7))) add(e.date, fcKey, e.days * p.rate);
+      const per = {};
+      for (const e of ps.es) if (e.billable) (per[e.date.slice(0, 7)] ||= { done: 0, planned: 0 })[e.status === 'done' ? 'done' : 'planned'] += e.days;
+      for (const ym of new Set([...Object.keys(per), ...Object.keys(byPeriod)])) {
+        const d = per[ym] || { done: 0, planned: 0 };
+        rev(ym, 'earned', ym in byPeriod ? byPeriod[ym] : d.done * p.rate); // 已請款的月份以請款金額為準
+        rev(ym, 'pre', d.planned * p.rate);
+      }
     } else if (p.billing === 'monthly') {
-      if (p.start_date && p.end_date) for (const ym of monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7))) if (!covered.has(ym)) add(ym, fcKey, p.rate);
+      const span = p.start_date && p.end_date ? monthSpan(p.start_date.slice(0, 7), p.end_date.slice(0, 7)) : [];
+      for (const ym of new Set([...span, ...Object.keys(byPeriod)])) {
+        if (ym in byPeriod) rev(ym, 'earned', byPeriod[ym]);
+        else rev(ym, ym <= thisMonth ? 'earned' : 'pre', p.rate);
+      }
     } else {
+      for (const ym in byPeriod) rev(ym, 'earned', byPeriod[ym]);
       const restRev = p.est_revenue - ps.billed;
       if (restRev > 0) {
         const anchor = p.end_date || p.start_date;
-        if (anchor) add(anchor, fcKey, restRev); else undatedRev += restRev;
+        if (anchor) rev(anchor, 'unrev', restRev); else undatedRev += restRev;
       }
     }
+    // 人天
     for (const e of ps.es) { add(e.date, e.status === 'done' ? 'done' : 'sched', e.days); if (!e.billable) add(e.date, 'free', e.days); }
     const restDays = p.est_days - (ps.done + ps.sched - ps.free); // 義工不占預估人天
     if (restDays > 0 && p.status !== 'done') {
@@ -156,14 +178,14 @@ function yearStats(year) {
         const span = monthSpan(from, b.slice(0, 7) > from ? b.slice(0, 7) : from);
         for (const ym of span) {
           if (!lead) add(ym, 'unsched', restDays / span.length);
-          if (p.billing === 'daily' && !covered.has(ym)) add(ym, fcKey, (restDays / span.length) * p.rate);
+          if (p.billing === 'daily') rev(ym, 'unrev', (restDays / span.length) * p.rate);
         }
       }
     }
     if (touched) groups.forEach((g) => g.n++);
   }
   const total = months.reduce((t, m) => { for (const k in m) t[k] += m[k]; return t; }, mk());
-  return { months, total, byType, bySource, undatedRev, undatedDays };
+  return { months, total, dims, undatedRev, undatedDays };
 }
 
 function dayLoad(date) {
@@ -247,13 +269,7 @@ function viewDashboard() {
   const allDays = T.done + T.sched + T.unsched;
   const t = today();
 
-  const revChart = columnChart({
-    max: Math.max(...st.months.map((m) => Math.max(m.fc, m.actual))), fmt: (v) => (v / 10000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '萬',
-    cols: st.months.map((m, i) => ({
-      tip: `${i + 1} 月\n預估 ${money(m.fc)}\n實收 ${money(m.actual)}${m.lead ? `\n洽談中 ${money(m.lead)}` : ''}`,
-      html: (top) => `<div class="bar" style="height:${(m.fc / top) * 100}%;background:var(--seq-3)"></div><div class="bar" style="height:${(m.actual / top) * 100}%;background:var(--seq-1)"></div>`,
-    })),
-  });
+  const revChart = revenueChart(st);
   const dayChart = columnChart({
     max: Math.max(...st.months.map((m) => m.done + m.sched + m.unsched)), cap: capM, fmt: (v) => days(v),
     cols: st.months.map((m, i) => {
@@ -265,19 +281,6 @@ function viewDashboard() {
       };
     }),
   });
-
-  const breakdown = (title, groups, labelOf, colorOf) => {
-    const rows = Object.entries(groups).map(([k, g]) => ({ k, g, d: g.done + g.sched + g.unsched })).filter((r) => r.g.fc || r.d || r.g.actual || r.g.lead).sort((a, b) => b.g.fc - a.g.fc);
-    const maxFc = Math.max(1, ...rows.map((r) => r.g.fc));
-    return `<div class="card"><h2>${title}</h2>${rows.length ? `<div class="tbl-wrap"><table>
-      <tr><th>${title.slice(0, 2)}</th><th>案數</th><th>預估收入</th><th>占比</th><th>實收</th><th>人天</th><th>每人天產值</th></tr>
-      ${rows.map(({ k, g, d }) => `<tr><td><span class="dot" style="background:${colorOf(k)}"></span>${h(labelOf(k))}</td><td class="num">${g.n}</td>
-        <td class="num"><span class="hbar" style="width:${(g.fc / maxFc) * 60}px;background:${colorOf(k)}"></span>${money(g.fc)}</td>
-        <td class="num">${pct(g.fc, T.fc)}</td><td class="num">${money(g.actual)}</td><td class="num">${days(d)}</td>
-        <td class="num">${d > 0 ? money(g.fc / d) : '—'}</td></tr>`).join('')}
-      <tr class="total"><td>合計</td><td></td><td class="num">${money(T.fc)}</td><td></td><td class="num">${money(T.actual)}</td><td class="num">${days(allDays)}</td><td class="num">${allDays > 0 ? money(T.fc / allDays) : '—'}</td></tr>
-      </table></div>` : '<div class="empty">本年度尚無資料</div>'}</div>`;
-  };
 
   // 待處理事項
   const conflicts = [...new Set(S.data.entries.filter((e) => e.date >= t).map((e) => e.date))].filter((d) => dayLoad(d).conflict).sort();
@@ -292,21 +295,21 @@ function viewDashboard() {
   <div class="grid kpi">
     <div class="card"><div class="lbl">預估年收入</div><div class="val">${wan(T.fc)}</div>
       <div class="sub">${target ? `年度目標 ${wan(target)}・達成 ${pct(T.fc, target)}` : '<a href="#/settings">設定年度目標</a>'}</div></div>
-    <div class="card"><div class="lbl">已實現收入</div><div class="val">${wan(T.actual)}</div>
-      <div class="sub">占預估 ${pct(T.actual, T.fc)}${target ? `・占目標 ${pct(T.actual, target)}` : ''}</div></div>
+    <div class="card"><div class="lbl">已實現收入(已完成工作)</div><div class="val">${wan(T.earned)}</div>
+      <div class="sub">已請款 ${wan(T.billed)}・實收 ${wan(T.actual)}</div></div>
     <div class="card"><div class="lbl">投入人天(完成/全部)</div><div class="val">${days(T.done)}<span class="muted" style="font-size:15px"> / ${days(allDays)}</span></div>
       <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}${T.free ? `・含義工 ${days(T.free)} 天` : ''}</div></div>
     <div class="card"><div class="lbl">每人天產值(預估)</div><div class="val">${allDays > 0 ? money(T.fc / allDays) : '—'}</div>
       <div class="sub">洽談中潛在 ${wan(T.lead)}</div></div>
   </div>
   <div class="card"><h2>收入進度</h2>
-    <div class="legend"><span><i style="background:var(--seq-1)"></i>已實收 ${money(T.actual)}</span><span><i style="background:var(--seq-3)"></i>預估 ${money(T.fc)}</span>
+    <div class="legend">${REV_LEGEND(T)}
       ${target ? `<span>目標 ${money(target)}</span>` : ''}${isThisYear ? `<span><i style="background:var(--text);width:2px;border-radius:0"></i>年度時間進度 ${Math.round(elapsed * 100)}%</span>` : ''}</div>
-    <div class="meter" data-tip="已實收 ${money(T.actual)}\n預估 ${money(T.fc)}${target ? `\n目標 ${money(target)}` : ''}"><i class="fc" style="width:${(T.fc / base) * 100}%"></i><i class="act" style="width:${(T.actual / base) * 100}%"></i>${isThisYear ? `<b style="left:${elapsed * 100}%"></b>` : ''}</div>
+    <div class="meter" data-tip="已實現 ${money(T.earned)}\n已排預收 ${money(T.pre)}\n未排預估 ${money(T.unrev)}\n預估合計 ${money(T.fc)}${target ? `\n目標 ${money(target)}` : ''}\n(實收 ${money(T.actual)})"><i class="fc hatch" style="width:${(T.fc / base) * 100}%"></i><i class="mid" style="width:${((T.earned + T.pre) / base) * 100}%"></i><i class="act" style="width:${(T.earned / base) * 100}%"></i>${isThisYear ? `<b style="left:${elapsed * 100}%"></b>` : ''}</div>
     <div class="small muted">${target && T.fc < target ? `距年度目標尚差 ${money(target - T.fc)} 的案源。` : ''}${st.undatedRev ? ` 另有 ${money(st.undatedRev)} 預估收入的專案未填日期,未計入年度。` : ''}${st.undatedDays ? ` 另有 ${days(st.undatedDays)} 人天的專案未填日期。` : ''}</div>
   </div>
   <div class="grid two">
-    <div class="card"><h2>每月收入</h2><div class="legend"><span><i style="background:var(--seq-3)"></i>預估</span><span><i style="background:var(--seq-1)"></i>實收</span></div>${revChart}</div>
+    <div class="card"><h2>每月收入</h2><div class="legend">${REV_LEGEND()}</div>${revChart}</div>
     <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
   </div>
   <div class="grid two">
@@ -321,18 +324,64 @@ function viewDashboard() {
       ${upcoming.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
     </ul></div>
   </div>
-  ${breakdown('類型分析', st.byType, (k) => TYPES[k]?.label || k, tcolor)}
-  ${breakdown('來源分析', st.bySource, (k) => k, () => 'var(--text-3)')}
+  ${analysisCard(st)}
   ${monthTable(st, capM)}`;
+}
+
+const REV_KEYS = [['earned', '已實現', '--seq-1', ''], ['pre', '已排預收', '--seq-2', ''], ['unrev', '未排預估', '--seq-3', ' hatch']];
+const REV_LEGEND = (T) => REV_KEYS.map(([k, label, c, cls]) => `<span><i class="${cls}" style="background-color:var(${c})"></i>${label}${T ? ' ' + money(T[k]) : ''}</span>`).join('');
+const revTip = (title, m) => `${title}\n${REV_KEYS.map(([k, label]) => `${label} ${money(m[k])}`).join('\n')}\n預估合計 ${money(m.fc)}\n已請款 ${money(m.billed)}・實收 ${money(m.actual)}${m.lead ? `\n洽談中 ${money(m.lead)}` : ''}`;
+
+function revenueChart(st) {
+  return columnChart({
+    max: Math.max(...st.months.map((m) => m.fc)), fmt: (v) => (v / 10000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '萬',
+    cols: st.months.map((m, i) => ({
+      tip: revTip(`${i + 1} 月`, m),
+      html: (top) => `<div class="stack">${REV_KEYS.filter(([k]) => m[k] > 0).map(([k, , c, cls]) => `<i class="${cls}" style="height:calc(${(m[k] / top) * 100}% - 2px);background-color:var(${c})"></i>`).join('')}</div>`,
+    })),
+  });
+}
+
+// 多面向收入分析:工作類型 / 來源 / 來源名稱 / 專案
+const DIMS = {
+  type: ['工作類型', (k) => TYPES[k]?.label || k, (k) => tcolor(k)],
+  source: ['來源', (k) => k, () => 'var(--text-3)'],
+  sourceName: ['來源名稱', (k) => k, () => 'var(--text-3)'],
+  project: ['專案', (k) => proj(Number(k))?.name || k, (k) => tcolor(proj(Number(k))?.type)],
+};
+function analysisCard(st) {
+  const [title, labelOf, colorOf] = DIMS[S.dim], T = st.total, isProj = S.dim === 'project';
+  const rows = Object.entries(st.dims[S.dim]).map(([k, g]) => ({ k, g, d: g.done + g.sched + g.unsched }))
+    .filter((r) => r.g.fc || r.d || r.g.actual || r.g.billed).sort((a, b) => b.g.fc - a.g.fc || b.d - a.d);
+  const max = Math.max(1, ...rows.map((r) => r.g.fc));
+  const allDays = T.done + T.sched + T.unsched;
+  const cells = (g, d) => `<td class="num">${money(g.earned)}</td><td class="num">${money(g.pre)}</td><td class="num">${money(g.unrev)}</td><td class="num"><b>${money(g.fc)}</b></td>
+    <td class="num">${pct(g.fc, T.fc)}</td><td class="num">${money(g.billed)}</td><td class="num">${money(g.actual)}</td><td class="num">${days(d)}</td><td class="num">${d > 0 ? money(g.fc / d) : '—'}</td>`;
+  return `<div class="card"><h2>收入分析</h2>
+    <div class="chips" style="margin-bottom:10px">${Object.entries(DIMS).map(([k, [label]]) => `<button class="chip${S.dim === k ? ' on' : ''}" data-act="dim" data-k="${k}">依${label}</button>`).join('')}</div>
+    ${rows.length ? `<div class="legend">${REV_LEGEND()}</div>
+    <div class="hrows">${rows.map(({ k, g }) => `<div class="hrow" data-tip="${h(revTip(labelOf(k), g))}">
+      <div class="hl"><span class="dot" style="background:${colorOf(k)}"></span>${h(labelOf(k))}</div>
+      <div class="ht">${REV_KEYS.filter(([key]) => g[key] > 0).map(([key, , c, cls]) => `<i class="${cls}" style="width:${(g[key] / max) * 100}%;background-color:var(${c})"></i>`).join('')}</div>
+      <div class="hv num">${wan(g.fc)}</div></div>`).join('')}</div>
+    <div class="tbl-wrap" style="margin-top:12px"><table>
+      <tr><th>${title}</th>${isProj ? '' : '<th>案數</th>'}<th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>占比</th><th>已請款</th><th>實收</th><th>人天</th><th>每人天產值</th></tr>
+      ${rows.map(({ k, g, d }) => `<tr><td><span class="dot" style="background:${colorOf(k)}"></span>${isProj ? `<a href="#/project/${k}">${h(labelOf(k))}</a>` : h(labelOf(k))}</td>${isProj ? '' : `<td class="num">${g.n}</td>`}${cells(g, d)}</tr>`).join('')}
+      <tr class="total"><td>合計</td>${isProj ? '' : '<td></td>'}${cells(T, allDays)}</tr>
+    </table></div>` : '<div class="empty">本年度尚無資料</div>'}</div>`;
 }
 
 function monthTable(st, capM) {
   const nowIdx = S.year === new Date().getFullYear() ? new Date().getMonth() : -1, T = st.total;
-  const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched) * 10) / 10; return `<tr class="${cls}"><td>${label}</td><td class="num">${money(m.fc)}</td><td class="num">${money(m.actual)}</td><td class="num">${m.lead ? money(m.lead) : '—'}</td><td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
+  const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched) * 10) / 10; return `<tr class="${cls}"><td>${label}</td>
+    <td class="num">${money(m.earned)}</td><td class="num">${money(m.pre)}</td><td class="num">${money(m.unrev)}</td><td class="num"><b>${money(m.fc)}</b></td>
+    <td class="num">${money(m.billed)}</td><td class="num">${money(m.actual)}</td><td class="num">${m.lead ? money(m.lead) : '—'}</td>
+    <td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
   return `<div class="card"><h2>月統計表</h2><div class="tbl-wrap"><table>
-    <tr><th>月份</th><th>預估收入</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>產能占用</th></tr>
+    <tr><th>月份</th><th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>已請款</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>產能占用</th></tr>
     ${st.months.map((m, i) => row(`${i + 1} 月`, m, i === nowIdx ? 'now' : '', capM)).join('')}${row('全年', T, 'total', capM * 12)}
-  </table></div></div>`;
+  </table></div>
+  <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。</p></div>`;
 }
 
 function entryLi(e, showDate) {
@@ -444,24 +493,25 @@ function incomeLi(i, showProject) {
     <div class="acts">${i.status !== 'received' ? `<button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button>` : ''}<button class="btn sm" data-act="dlg-income" data-id="${i.id}">編輯</button></div></li>`;
 }
 function viewIncome() {
-  const st = yearStats(S.year), capM = setting('monthly_capacity', 20);
+  const st = yearStats(S.year), capM = setting('monthly_capacity', 20), T = st.total;
   const list = S.data.incomes.filter((i) => i.date.startsWith(String(S.year)) && live(proj(i.project_id)));
-  const sum = (st_) => list.filter((i) => st_.includes(i.status)).reduce((t, i) => t + i.amount, 0);
   let body = '';
   for (let m = 1; m <= 12; m++) {
     const rows = list.filter((i) => Number(i.date.slice(5, 7)) === m);
-    if (rows.length) body += `<div class="card"><h2>${m} 月<span class="spacer"></span><span class="small muted num">${money(rows.reduce((t, i) => t + i.amount, 0))}</span></h2><ul class="list">${rows.map((i) => incomeLi(i, true)).join('')}</ul></div>`;
+    if (rows.length) body += `<h3 style="margin:14px 0 6px">${m} 月<span class="small muted num" style="font-weight:400">・${money(rows.reduce((t, i) => t + i.amount, 0))}</span></h3><ul class="list">${rows.map((i) => incomeLi(i, true)).join('')}</ul>`;
   }
   return `
   <div class="head"><h1>${S.year} 收入</h1>${yearSelect()}<button class="btn primary" data-act="dlg-income">＋ 收款</button></div>
   <div class="grid kpi">
-    <div class="card"><div class="lbl">預估年收入</div><div class="val">${wan(st.total.fc)}</div><div class="sub">含未排入收款的專案餘額</div></div>
-    <div class="card"><div class="lbl">已收款</div><div class="val">${wan(sum(['received']))}</div><div class="sub">占預估 ${pct(st.total.actual, st.total.fc)}</div></div>
-    <div class="card"><div class="lbl">已請款未收</div><div class="val">${wan(sum(['invoiced']))}</div><div class="sub">應收帳款</div></div>
-    <div class="card"><div class="lbl">預計收款</div><div class="val">${wan(sum(['expected']))}</div><div class="sub">尚未請款</div></div>
+    <div class="card"><div class="lbl">預估年收入</div><div class="val">${wan(T.fc)}</div><div class="sub">已實現+已排預收+未排預估</div></div>
+    <div class="card"><div class="lbl">已實現(已完成工作)</div><div class="val">${wan(T.earned)}</div><div class="sub">${T.earned > T.billed ? `其中 ${wan(T.earned - T.billed)} 尚未請款` : '皆已請款'}</div></div>
+    <div class="card"><div class="lbl">已排預收</div><div class="val">${wan(T.pre)}</div><div class="sub">未排預估 ${wan(T.unrev)}</div></div>
+    <div class="card"><div class="lbl">實收</div><div class="val">${wan(T.actual)}</div><div class="sub">已請款未收 ${wan(T.billed - T.actual)}</div></div>
   </div>
-  ${body || '<div class="card empty">本年度尚無收款紀錄</div>'}
-  ${monthTable(st, capM)}`;
+  <div class="card"><h2>每月收入</h2><div class="legend">${REV_LEGEND()}</div>${revenueChart(st)}</div>
+  ${analysisCard(st)}
+  ${monthTable(st, capM)}
+  <div class="card"><h2>收款紀錄(依收款日期)</h2>${body || '<div class="empty">本年度尚無收款紀錄</div>'}</div>`;
 }
 
 // ---------- 設定 ----------
@@ -642,6 +692,7 @@ const ACTS = {
   'cal-today': () => { S.calMonth = today().slice(0, 7); S.calDay = today(); render(); },
   'goto-day': (d) => { S.calDay = d.date; S.calMonth = d.date.slice(0, 7); location.hash = '#/calendar'; },
   'p-filter': (d) => { S.pFilter = d.k; render(); },
+  dim: (d) => { S.dim = d.k; render(); },
   'entry-done': (d) => putRow('entries', S.data.entries.find((e) => e.id === Number(d.id)), { status: 'done' }),
   'income-received': (d) => putRow('incomes', S.data.incomes.find((i) => i.id === Number(d.id)), { status: 'received' }),
   'confirm-stale': async () => {

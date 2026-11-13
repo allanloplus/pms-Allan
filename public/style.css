@@ -202,3 +202,18 @@ dialog h2 { margin-bottom: 12px; }
 .swatches input:focus-visible + i { box-shadow: 0 0 0 2px var(--accent); }
 .list .main .work { font-size: 13.5px; overflow-wrap: anywhere; }
 [hidden] { display: none !important; }
+.meter i.mid { background: var(--seq-2); }
+.meter i.fc.hatch { background-color: var(--seq-3); }
+/* horizontal stacked bars */
+.hrows { display: grid; gap: 8px; }
+.hrow { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 76px; gap: 10px; align-items: center; font-size: 13.5px; }
+.hrow .hl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hrow .ht { display: flex; gap: 2px; height: 16px; }
+.hrow .ht i { display: block; border-radius: 2px; min-width: 2px; }
+.hrow .ht i:last-child { border-radius: 2px 4px 4px 2px; }
+.hrow .hv { text-align: right; color: var(--text-2); }
+@media (max-width: 760px) {
+  .hrow { grid-template-columns: minmax(0, 1fr) 76px; gap: 2px 10px; }
+  .hrow .hl { grid-column: 1 / -1; }
+}
+h3 .small { margin-left: 2px; }
