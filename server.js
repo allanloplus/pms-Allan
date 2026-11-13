@@ -422,7 +422,20 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// 指令列:node server.js set-password  (密碼由標準輸入讀入,用於部署時設定或忘記密碼時重設)
+function setPasswordFromStdin() {
+  const pw = fs.readFileSync(0, 'utf8').replace(/\r?\n$/, '');
+  if (pw.length < 8) { console.error('密碼至少 8 碼'); process.exit(1); }
+  if (pw === DEFAULT_PASS) { console.error('不可使用預設密碼'); process.exit(1); }
+  const u = db.prepare('SELECT id, username FROM users ORDER BY id LIMIT 1').get();
+  const salt = crypto.randomBytes(16).toString('hex');
+  db.prepare('UPDATE users SET pw_hash = ?, salt = ?, must_change = 0 WHERE id = ?').run(hashPw(pw, salt), salt, u.id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+  console.log(`已設定帳號 ${u.username} 的密碼,並登出所有裝置`);
+}
+
 if (require.main === module) {
-  server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}`));
+  if (process.argv[2] === 'set-password') setPasswordFromStdin();
+  else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}`));
 }
 module.exports = { server, db };

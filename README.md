@@ -50,50 +50,32 @@ node server.js
 | `DATA_DIR` | `./data` | SQLite 資料庫位置(`pms.db`) |
 | `TRUST_PROXY` | 未設定 | 設為 `1` 表示位於反向代理之後:採用 `X-Forwarded-For` 作為登入鎖定的來源 IP,並在 HTTPS 時發出 `Secure` cookie 與 HSTS |
 
-## VPS 部署
+## VPS 部署(Ubuntu / Debian)
 
-1. 放置程式並建立專用帳號:
-
-   ```bash
-   sudo useradd --system --home /opt/pms --shell /usr/sbin/nologin pms
-   sudo git clone <repo> /opt/pms && sudo chown -R pms:pms /opt/pms
-   ```
-
-2. `/etc/systemd/system/pms.service`:
-
-   ```ini
-   [Unit]
-   Description=PMS
-   After=network.target
-
-   [Service]
-   User=pms
-   WorkingDirectory=/opt/pms
-   Environment=PORT=3300 HOST=127.0.0.1 TRUST_PROXY=1
-   ExecStart=/usr/bin/node server.js
-   Restart=on-failure
-   NoNewPrivileges=true
-   ProtectSystem=strict
-   ReadWritePaths=/opt/pms/data
-   PrivateTmp=true
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
+1. 將網域的 DNS A 紀錄指向 VPS 的 IP。
+2. 把程式放到 `/opt/pms`(由 root 擁有,服務只能讀取程式碼):
 
    ```bash
-   sudo systemctl enable --now pms
+   sudo git clone -b claude/youthful-sagan-mlepxp https://github.com/allanloplus/pms-Allan.git /opt/pms
    ```
 
-3. 以反向代理提供 HTTPS(帳密登入務必走 TLS)。Caddy 範例:
+3. 執行安裝腳本(可重複執行;網域可省略,預設 `pms.123hi.org`):
 
-   ```
-   pms.example.com {
-       reverse_proxy 127.0.0.1:3300
-   }
+   ```bash
+   sudo bash /opt/pms/deploy/install.sh pms.123hi.org
    ```
 
-4. 備份:定期複製 `data/` 目錄(`pms.db`、`pms.db-wal`),或由「設定 → 下載備份」匯出 JSON。
+   腳本會:檢查 / 安裝 Node.js 22、建立專用帳號 `pms`、首次安裝時要求設定登入密碼(不使用預設密碼)、
+   安裝 systemd 服務(監聽 `127.0.0.1:3300`)、偵測 Caddy 或 nginx 並加入反向代理與 HTTPS。
+   埠號衝突時可用 `sudo PORT=3301 bash /opt/pms/deploy/install.sh`。
+
+| 日常維運 | 指令 |
+|---|---|
+| 更新程式(會先備份資料庫到 `data/backup/`,保留 14 份) | `sudo bash /opt/pms/deploy/update.sh` |
+| 重設密碼 | `sudo bash /opt/pms/deploy/set-password.sh` |
+| 狀態 / 日誌 | `systemctl status pms`、`journalctl -u pms -f` |
+
+資料都在 `/opt/pms/data/`(`pms.db`),異地備份請定期複製此目錄,或由「設定 → 下載備份」匯出 JSON。
 
 ## 安全設計
 
