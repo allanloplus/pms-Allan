@@ -82,6 +82,7 @@ Compose 專案 `pms-allan` 執行,加入同一個網路,由該 Caddy 代理 `htt
 | 更新程式(先備份再重建) | `bash /opt/pms-allan/deploy/update.sh` |
 | 備份資料庫到 `/var/backups/pms-allan`(保留 14 天) | `bash /opt/pms-allan/deploy/backup.sh` |
 | 重設密碼 | `bash /opt/pms-allan/deploy/set-password.sh` |
+| 以上傳的資料庫取代主機資料(先 `scp -r data root@主機:/root/pms-upload`) | `bash /opt/pms-allan/deploy/import-db.sh` |
 | 狀態 / 日誌 | `cd /opt/pms-allan/deploy && docker compose ps`、`docker compose logs -f` |
 
 資料存在 Docker 具名磁碟區 `pms-allan_data`。**不要執行 `docker compose down -v`**,那會刪除資料庫。
