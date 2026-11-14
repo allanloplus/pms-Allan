@@ -127,9 +127,7 @@ function failState(ip) {
 setInterval(() => {
   for (const ip of fails.keys()) failState(ip);
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
-  // 上傳後沒有掛到任何靈感的媒體檔,超過一天即清除
-  dropMedia(db.prepare(`SELECT id FROM media WHERE created_at < ? AND id NOT IN (SELECT media_id FROM spark_items WHERE media_id IS NOT NULL)`)
-    .all(new Date(Date.now() - 864e5).toISOString()).map((r) => r.id));
+  try { sweepMedia(); } catch (e) { console.error(e); }
 }, 10 * 60 * 1000).unref();
 
 function clientIp(req) {
@@ -324,6 +322,26 @@ function sendMedia(req, res, id) {
   fs.createReadStream(mediaFile(id), { start, end }).pipe(res);
 }
 const STREAMED = Symbol('streamed');
+// 清掉沒有任何靈感使用的媒體:上傳後未掛上且超過一天的紀錄,以及磁碟上沒有對應紀錄的殘留檔
+function sweepMedia() {
+  const dayAgo = new Date(Date.now() - 864e5).toISOString();
+  dropMedia(db.prepare(`SELECT id FROM media WHERE created_at < ? AND id NOT IN (SELECT media_id FROM spark_items WHERE media_id IS NOT NULL)`)
+    .all(dayAgo).map((r) => r.id));
+  const known = new Set(db.prepare('SELECT id FROM media').all().map((r) => r.id));
+  for (const f of fs.readdirSync(MEDIA_DIR)) {
+    const file = path.join(MEDIA_DIR, f);
+    if (!known.has(f) && Date.now() - fs.statSync(file).mtimeMs > 864e5) fs.rmSync(file, { force: true });
+  }
+}
+function storageInfo() {
+  const size = (f) => { try { return fs.statSync(f).size; } catch { return 0; } };
+  const dbFile = path.join(DATA_DIR, 'pms.db');
+  const m = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes,
+    COALESCE(SUM(CASE WHEN mime LIKE 'audio/%' THEN size END), 0) AS audio FROM media`).get();
+  let disk = null;
+  try { const st = fs.statfsSync(DATA_DIR); disk = { total: st.blocks * st.bsize, free: st.bavail * st.bsize }; } catch { /* 部分平台不支援 */ }
+  return { db: size(dbFile) + size(dbFile + '-wal'), media_count: m.n, media_bytes: m.bytes, audio_bytes: m.audio, disk };
+}
 
 function cleanIncome(b) {
   const amount = Math.round(Number(b.amount));
@@ -409,6 +427,7 @@ async function api(req, res, url) {
 
   if (p === '/api/me' && m === 'GET') return { username: user.username, must_change: !!user.must_change };
   if (p === '/api/data' && m === 'GET') return allData();
+  if (p === '/api/storage' && m === 'GET') return storageInfo();
   if (p === '/api/export' && m === 'GET') {
     res.setHeader('Content-Disposition', `attachment; filename="pms-backup-${new Date().toISOString().slice(0, 10)}.json"`);
     return { exported_at: new Date().toISOString(), ...allData() };
@@ -605,6 +624,7 @@ function setPasswordFromStdin() {
 }
 
 if (require.main === module) {
+  try { sweepMedia(); } catch (e) { console.error(e); }
   if (process.argv[2] === 'set-password') setPasswordFromStdin();
   else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}`));
 }

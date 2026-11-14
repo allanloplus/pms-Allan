@@ -247,6 +247,7 @@ function render() {
     <button class="fab" data-act="dlg-spark" aria-label="記一筆靈感" title="記一筆靈感"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round">${ICON.spark}</svg></button>`;
   if (render.last === location.hash) window.scrollTo(0, y0); else window.scrollTo(0, 0);
   render.last = location.hash;
+  if (r === 'settings') loadStorage();
 }
 
 function viewLogin() {
@@ -570,6 +571,7 @@ function viewSettings() {
     <p class="muted small" style="margin-bottom:0">停用的類型不會出現在新增專案的選單,既有專案與統計不受影響。</p></div>
   <div class="card"><h2>帳號</h2><p class="muted small" style="margin-top:0">登入帳號:${h(S.user.username)}</p>
     <div class="chips"><button class="btn" data-act="dlg-password">變更密碼</button><button class="btn" data-act="logout">登出</button></div></div>
+  <div class="card"><h2>儲存空間</h2><div id="storage" class="muted small">讀取中…</div></div>
   <div class="card"><h2>資料備份</h2><p class="muted small" style="margin-top:0">匯出全部專案、排程與收款為 JSON 檔。</p><a class="btn" href="/api/export" download style="display:inline-block">下載備份</a></div>`;
 }
 
@@ -791,6 +793,22 @@ document.addEventListener('pointerover', (ev) => {
   tip.style.top = (r.top - hh - 6 > 0 ? r.top - hh - 6 : r.top + 24) + 'px';
 });
 window.addEventListener('scroll', () => (tip.hidden = true), { passive: true });
+// 設定頁的儲存空間用量
+const mb = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.ceil(n / 1e3) + ' KB');
+async function loadStorage() {
+  const el = $('#storage'); if (!el) return;
+  try {
+    const s = await api('GET', '/storage'), used = s.db + s.media_bytes;
+    const low = s.disk && s.disk.free < 2e9;
+    el.innerHTML = `<table><tr><th>項目</th><th>用量</th></tr>
+      <tr><td>資料庫(專案、排程、收款、靈感文字)</td><td class="num">${mb(s.db)}</td></tr>
+      <tr><td>靈感媒體檔(${s.media_count} 個:圖片/塗鴉 ${mb(s.media_bytes - s.audio_bytes)}、錄音 ${mb(s.audio_bytes)})</td><td class="num">${mb(s.media_bytes)}</td></tr>
+      <tr class="total"><td>本系統合計</td><td class="num">${mb(used)}</td></tr></table>
+      ${s.disk ? `<div class="meter" style="margin-top:10px"><i class="act" style="width:${Math.max(1, (1 - s.disk.free / s.disk.total) * 100)}%"></i></div>
+      <p style="margin:4px 0 0" class="${low ? 'bad' : ''}">${low ? '⚠ ' : ''}主機磁碟剩餘 ${mb(s.disk.free)} / 共 ${mb(s.disk.total)}(含主機上其他系統)${low ? ',空間偏低,請清理或擴充' : ''}</p>` : ''}
+      <p style="margin:6px 0 0">刪除靈感或片段時,圖片與錄音檔會一併從主機刪除。</p>`;
+  } catch (e) { el.textContent = e.message; }
+}
 window.addEventListener('hashchange', render);
 
 (async () => {

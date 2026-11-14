@@ -285,3 +285,4 @@ input.sp-title:hover, input.sp-title:focus { border-color: var(--line); padding-
 .it-h .btn { min-height: 24px; padding: 0 7px; }
 .it-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .it img { max-width: 100%; max-height: 420px; border-radius: 8px; display: block; border: 1px solid var(--line); }
+#storage td:first-child { white-space: normal; } #storage table { table-layout: auto; }
