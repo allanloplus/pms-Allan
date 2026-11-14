@@ -299,7 +299,7 @@ function viewDashboard() {
       const tot = m.done + m.sched + m.unsched;
       return {
         tip: `${i + 1} 月 工作 ${days(tot)} 天${m.blocked ? ` + 私人 ${days(m.blocked)} 天` : ''}(產能占用 ${pct(tot + m.blocked, capM)})\n已完成 ${days(m.done)}\n已排程 ${days(m.sched)}\n未排程預估 ${days(m.unsched)}${m.blocked ? `\n私人時間 ${days(m.blocked)}(平日)` : ''}`,
-        html: (top) => `<div class="stack">${[['done', '--seq-1', ''], ['sched', '--seq-2', ''], ['unsched', '--seq-3', ' hatch'], ['blocked', '--neutral', '']].filter(([k]) => m[k] > 0)
+        html: (top) => `<div class="stack">${[['done', '--seq-1', ''], ['sched', '--seq-2', ''], ['unsched', '--seq-3', ' hatch'], ['blocked', '--private', '']].filter(([k]) => m[k] > 0)
           .map(([k, c, cls]) => `<i class="${cls}" style="height:calc(${(m[k] / top) * 100}% - 2px);background-color:var(${c})"></i>`).join('')}</div>`,
       };
     }),
@@ -333,7 +333,7 @@ function viewDashboard() {
   </div>
   <div class="grid two">
     <div class="card"><h2>每月收入</h2><div class="legend">${REV_LEGEND()}</div>${revChart}</div>
-    <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i style="background:var(--neutral)"></i>私人時間</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
+    <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i style="background:var(--private)"></i>私人時間</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
   </div>
   <div class="grid two">
     <div class="card"><h2>待處理</h2><ul class="list">
@@ -413,7 +413,7 @@ function monthTable(st, capM) {
 const plink = (p) => `<a href="#/project/${p.id}">${h(p.name)}</a>`;
 function blockLi(b) {
   return `<li><div class="when">${md(b.start_date)}(${dow(b.start_date)})</div>
-    <div class="main"><div class="t"><span class="dot" style="background:var(--neutral)"></span>${h(b.title)}</div>
+    <div class="main"><div class="t"><span class="dot" style="background:var(--private)"></span>${h(b.title)}</div>
     <div class="small muted"><span class="badge">私人・${h(b.category)}</span> ${blockRange(b)}${b.slot === 'FULL' ? '・全天' : ''}・不排工作${b.note ? '・' + h(b.note) : ''}</div></div>
     <div class="acts"><button class="btn sm" data-act="dlg-block" data-id="${b.id}">編輯</button></div></li>`;
 }
@@ -452,7 +452,7 @@ function viewCalendar() {
     <button class="btn" data-act="dlg-block" data-date="${S.calDay}">＋ 私人時間</button><button class="btn primary" data-act="dlg-entry" data-date="${S.calDay}">＋ 排程</button></div>
   <div class="small muted" style="margin-bottom:8px">本月已排 <b class="${total > capM ? 'bad' : ''}">${days(total)}</b> / 產能 ${days(capM)} 天${off ? `,私人時間占平日 ${days(off)} 天,可排工作約剩 <b>${days(Math.max(0, capM - off - total))}</b> 天` : ''}。實色=已完成,虛框(手機為淡色)=預定。</div>
   <div class="cal">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}${cells}</div>
-  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${h(TYPES[k].short)}</span>`).join('')}<span><i class="hatch" style="background-color:var(--neutral)"></i>私人時間(不排工作)</span></div>
+  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${h(TYPES[k].short)}</span>`).join('')}<span><i style="background:var(--private)"></i>私人時間(不排工作)</span></div>
   <div class="card" style="margin-top:8px"><h2>${md(S.calDay)}(${dow(S.calDay)})${L.conflict ? `<span class="badge s-bad">⚠ ${L.blockConflict ? '與私人時間衝突' : '時間衝突'}</span>` : ''}<span class="spacer"></span><span class="small muted">已排 ${days(L.total)} 天</span></h2>
     <ul class="list">${L.blocks.map(blockLi).join('') + L.es.map((e) => entryLi(e, false)).join('') || '<li class="empty" style="justify-content:center">這天沒有排程</li>'}</ul></div>`;
 }
