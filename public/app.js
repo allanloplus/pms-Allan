@@ -424,7 +424,7 @@ function viewCalendar() {
 }
 
 // ---------- 專案 ----------
-const P_FILTERS = { open: ['進行中', ['reserved', 'confirmed', 'active']], lead: ['洽談中', ['lead']], done: ['已完成', ['done']], all: ['全部', Object.keys(STATUS)] };
+const P_FILTERS = { open: ['已確認/進行中', ['confirmed', 'active']], reserved: ['預定', ['reserved']], lead: ['洽談中', ['lead']], done: ['已完成', ['done']], cancelled: ['取消', ['cancelled']], all: ['全部', Object.keys(STATUS)] };
 function viewProjects() {
   const list = S.data.projects.filter((p) => P_FILTERS[S.pFilter][1].includes(p.status) && (!S.pType || p.type === S.pType))
     .sort((a, b) => (a.start_date || '9999').localeCompare(b.start_date || '9999'));
