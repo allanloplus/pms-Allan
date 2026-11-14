@@ -8,6 +8,7 @@ const STATUS = { lead: '洽談中', reserved: '預定', confirmed: '已確認', 
 const SLOT = { FULL: '全天', AM: '上午', PM: '下午' };
 const ESTATUS = { planned: '預定', done: '已完成' };
 const BILLING = { milestone: '專案分期請款', daily: '按日計・月結請款', monthly: '每月固定費用', investment: '自有投入(暫無收款)' };
+const BLOCK_CATS = ['旅遊', '家庭', '個人', '其他'];
 const ISTATUS = { expected: '預計', invoiced: '已請款', received: '已收款' };
 
 // ---------- 工具 ----------
@@ -116,7 +117,7 @@ function unbilledPeriods() {
 //   invest 自有投入人天(研發等不收款的專案,含未排程);investCost = 人天 × 機會成本
 // 人天 = done 已完成 + sched 已排程 + unsched 未排程(平均攤在專案剩餘月份);free 義工
 function yearStats(year) {
-  const mk = () => ({ fc: 0, earned: 0, pre: 0, unrev: 0, lead: 0, billed: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0, invest: 0, investCost: 0 });
+  const mk = () => ({ fc: 0, earned: 0, pre: 0, unrev: 0, lead: 0, billed: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0, invest: 0, investCost: 0, blocked: 0 });
   const months = Array.from({ length: 12 }, mk);
   const dims = { type: {}, source: {}, sourceName: {}, project: {} };
   let undatedRev = 0, undatedDays = 0;
@@ -188,15 +189,30 @@ function yearStats(year) {
     }
     if (touched) groups.forEach((g) => g.n++);
   }
+  // 私人時間:只計週一到週五(月產能以工作日估算),同一天最多 1 天
+  const seen = new Set();
+  for (const b of S.data.blocks) {
+    for (let t = Date.parse(b.start_date + 'T00:00:00Z'), end = Date.parse(b.end_date + 'T00:00:00Z'); t <= end; t += 864e5) {
+      const d = new Date(t), ds = d.toISOString().slice(0, 10);
+      if (d.getUTCFullYear() !== year || d.getUTCDay() % 6 === 0 || seen.has(ds)) continue;
+      seen.add(ds); months[d.getUTCMonth()].blocked += dayLoad(ds).blocked;
+    }
+  }
   const total = months.reduce((t, m) => { for (const k in m) t[k] += m[k]; return t; }, mk());
   return { months, total, dims, undatedRev, undatedDays };
 }
 
+// 私人時間:某日被哪些區間涵蓋
+const blocksOn = (date) => S.data.blocks.filter((b) => b.start_date <= date && date <= b.end_date);
+const blockRange = (b) => (b.start_date === b.end_date ? md(b.start_date) : `${md(b.start_date)}~${md(b.end_date)}`) + (b.slot === 'FULL' ? '' : ' ' + SLOT[b.slot]);
 function dayLoad(date) {
   const es = S.data.entries.filter((e) => e.date === date && live(proj(e.project_id)));
   const total = es.reduce((t, e) => t + e.days, 0);
   const cnt = (s) => es.filter((e) => e.slot === s).length;
-  return { es, total, conflict: total > 1 || cnt('AM') > 1 || cnt('PM') > 1 };
+  const blocks = blocksOn(date);
+  const off = { AM: blocks.some((b) => b.slot !== 'PM'), PM: blocks.some((b) => b.slot !== 'AM') }; // 被私人時間占用的時段
+  const blockConflict = es.some((e) => (e.slot === 'FULL' ? off.AM || off.PM : off[e.slot]));
+  return { es, total, blocks, blocked: (off.AM ? 0.5 : 0) + (off.PM ? 0.5 : 0), blockConflict, conflict: total > 1 || cnt('AM') > 1 || cnt('PM') > 1 || blockConflict };
 }
 
 // ---------- 版面 ----------
@@ -275,12 +291,12 @@ function viewDashboard() {
 
   const revChart = revenueChart(st);
   const dayChart = columnChart({
-    max: Math.max(...st.months.map((m) => m.done + m.sched + m.unsched)), cap: capM, fmt: (v) => days(v),
+    max: Math.max(...st.months.map((m) => m.done + m.sched + m.unsched + m.blocked)), cap: capM, fmt: (v) => days(v),
     cols: st.months.map((m, i) => {
       const tot = m.done + m.sched + m.unsched;
       return {
-        tip: `${i + 1} 月 合計 ${days(tot)} 天(產能 ${pct(tot, capM)})\n已完成 ${days(m.done)}\n已排程 ${days(m.sched)}\n未排程預估 ${days(m.unsched)}`,
-        html: (top) => `<div class="stack">${[['done', '--seq-1', ''], ['sched', '--seq-2', ''], ['unsched', '--seq-3', ' hatch']].filter(([k]) => m[k] > 0)
+        tip: `${i + 1} 月 工作 ${days(tot)} 天${m.blocked ? ` + 私人 ${days(m.blocked)} 天` : ''}(產能占用 ${pct(tot + m.blocked, capM)})\n已完成 ${days(m.done)}\n已排程 ${days(m.sched)}\n未排程預估 ${days(m.unsched)}${m.blocked ? `\n私人時間 ${days(m.blocked)}(平日)` : ''}`,
+        html: (top) => `<div class="stack">${[['done', '--seq-1', ''], ['sched', '--seq-2', ''], ['unsched', '--seq-3', ' hatch'], ['blocked', '--neutral', '']].filter(([k]) => m[k] > 0)
           .map(([k, c, cls]) => `<i class="${cls}" style="height:calc(${(m[k] / top) * 100}% - 2px);background-color:var(${c})"></i>`).join('')}</div>`,
       };
     }),
@@ -302,7 +318,7 @@ function viewDashboard() {
     <div class="card"><div class="lbl">已實現收入(已完成工作)</div><div class="val">${wan(T.earned)}</div>
       <div class="sub">已請款 ${wan(T.billed)}・實收 ${wan(T.actual)}</div></div>
     <div class="card"><div class="lbl">投入人天(完成/全部)</div><div class="val">${days(T.done)}<span class="muted" style="font-size:15px"> / ${days(allDays)}</span></div>
-      <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}${T.free ? `・含義工 ${days(T.free)} 天` : ''}</div></div>
+      <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays + T.blocked, capM * 12)}${T.blocked ? `・私人 ${days(T.blocked)} 天` : ''}${T.free ? `・含義工 ${days(T.free)} 天` : ''}</div></div>
     <div class="card"><div class="lbl">每人天產值(接案,預估)</div><div class="val">${allDays - T.invest > 0 ? money(T.fc / (allDays - T.invest)) : '—'}</div>
       <div class="sub">${T.invest ? `自有投入 ${days(T.invest)} 天・機會成本 ${wan(T.investCost)}` : `洽談中潛在 ${wan(T.lead)}`}</div></div>
   </div>
@@ -314,11 +330,11 @@ function viewDashboard() {
   </div>
   <div class="grid two">
     <div class="card"><h2>每月收入</h2><div class="legend">${REV_LEGEND()}</div>${revChart}</div>
-    <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
+    <div class="card"><h2>每月人天負載</h2><div class="legend"><span><i style="background:var(--seq-1)"></i>已完成</span><span><i style="background:var(--seq-2)"></i>已排程</span><span><i class="hatch" style="background-color:var(--seq-3)"></i>未排程預估</span><span><i style="background:var(--neutral)"></i>私人時間</span><span><i class="ln"></i>月產能 ${days(capM)} 天</span></div>${dayChart}</div>
   </div>
   <div class="grid two">
     <div class="card"><h2>待處理</h2><ul class="list">
-      ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main"><div class="t">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="small muted">${dayLoad(d).es.map((e) => `${SLOT[e.slot]} ${plink(proj(e.project_id))}`).join('、')}</div></div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
+      ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main"><div class="t">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="small muted">${[...dayLoad(d).es.map((e) => `${SLOT[e.slot]} ${plink(proj(e.project_id))}`), ...dayLoad(d).blocks.map((b) => `私人時間:${h(b.title)}`)].join('、')}</div></div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
       ${stale.length > 1 ? `<li><span class="badge s-lead">待確認</span><div class="main">${stale.length} 筆過去的排程尚未確認(共 ${days(stale.reduce((t, e) => t + e.days, 0))} 天),明細如下</div><div class="acts"><button class="btn sm" data-act="confirm-stale">全部標為完成</button></div></li>` : ''}
       ${stale.map((e) => { const p = proj(e.project_id); return `<li><span class="badge s-lead">待確認</span><div class="main"><div class="t">${plink(p)}</div><div class="small muted">${md(e.date)}(${dow(e.date)})・${SLOT[e.slot]}・${days(e.days)} 天${e.billable ? '' : '・義工'}${e.content ? '・' + h(e.content) : ''}</div></div><div class="acts"><button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button><button class="btn sm" data-act="dlg-entry" data-id="${e.id}">編輯</button></div></li>`; }).join('')}
       ${overdue.map((i) => `<li><span class="badge s-bad">逾期未收</span><div class="main"><div class="t">${plink(proj(i.project_id))}</div><div class="small muted">${i.date}・${money(i.amount)}・${ISTATUS[i.status]}</div></div><div class="acts"><button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button></div></li>`).join('')}
@@ -326,7 +342,8 @@ function viewDashboard() {
       ${!conflicts.length && !stale.length && !overdue.length && !unbilled.length ? '<li class="empty" style="justify-content:center">沒有待處理事項</li>' : ''}
     </ul></div>
     <div class="card"><h2>未來 3 週行程<span class="spacer"></span><a class="small" href="#/calendar">行事曆 ›</a></h2><ul class="list">
-      ${upcoming.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
+      ${[...upcoming.map((e) => [e.date, entryLi(e, true)]), ...S.data.blocks.filter((b) => b.end_date >= t && b.start_date <= until).map((b) => [b.start_date < t ? t : b.start_date, blockLi(b)])]
+        .sort((a, b) => a[0].localeCompare(b[0])).map((x) => x[1]).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
     </ul></div>
   </div>
   ${analysisCard(st)}
@@ -378,18 +395,24 @@ function analysisCard(st) {
 
 function monthTable(st, capM) {
   const nowIdx = S.year === new Date().getFullYear() ? new Date().getMonth() : -1, T = st.total;
-  const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched) * 10) / 10; return `<tr class="${cls}"><td>${label}</td>
+  const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched + m.blocked) * 10) / 10; return `<tr class="${cls}"><td>${label}</td>
     <td class="num">${money(m.earned)}</td><td class="num">${money(m.pre)}</td><td class="num">${money(m.unrev)}</td><td class="num"><b>${money(m.fc)}</b></td>
     <td class="num">${money(m.billed)}</td><td class="num">${money(m.actual)}</td><td class="num">${m.lead ? money(m.lead) : '—'}</td>
-    <td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num">${m.invest ? days(m.invest) : '—'}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
+    <td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num">${m.invest ? days(m.invest) : '—'}</td><td class="num">${m.blocked ? days(m.blocked) : '—'}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
   return `<div class="card"><h2>月統計表</h2><div class="tbl-wrap"><table>
-    <tr><th>月份</th><th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>已請款</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>其中自有投入</th><th>產能占用</th></tr>
+    <tr><th>月份</th><th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>已請款</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>其中自有投入</th><th>私人時間</th><th>產能占用</th></tr>
     ${st.months.map((m, i) => row(`${i + 1} 月`, m, i === nowIdx ? 'now' : '', capM)).join('')}${row('全年', T, 'total', capM * 12)}
   </table></div>
-  <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。自有投入=不收款的研發等專案人天,計入產能占用,但不列入每人天產值的分母。</p></div>`;
+  <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。自有投入=不收款的研發等專案人天,計入產能占用,但不列入每人天產值的分母。私人時間=旅遊、家庭等不排工作的平日天數,計入產能占用。</p></div>`;
 }
 
 const plink = (p) => `<a href="#/project/${p.id}">${h(p.name)}</a>`;
+function blockLi(b) {
+  return `<li><div class="when">${md(b.start_date)}(${dow(b.start_date)})</div>
+    <div class="main"><div class="t"><span class="dot" style="background:var(--neutral)"></span>${h(b.title)}</div>
+    <div class="small muted"><span class="badge">私人・${h(b.category)}</span> ${blockRange(b)}${b.slot === 'FULL' ? '・全天' : ''}・不排工作${b.note ? '・' + h(b.note) : ''}</div></div>
+    <div class="acts"><button class="btn sm" data-act="dlg-block" data-id="${b.id}">編輯</button></div></li>`;
+}
 function entryLi(e, showDate) {
   const p = proj(e.project_id);
   return `<li><div class="when">${showDate ? `${md(e.date)}(${dow(e.date)})` : SLOT[e.slot]}</div>
@@ -405,28 +428,29 @@ function viewCalendar() {
   const [y, m] = S.calMonth.split('-').map(Number);
   const first = new Date(y, m - 1, 1), start = new Date(y, m - 1, 1 - first.getDay());
   const t = today();
-  let cells = '', total = 0;
+  let cells = '', total = 0, off = 0;
   for (let i = 0; i < 42; i++) {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), ds = ymd(d);
     if (i === 35 && d.getMonth() !== m - 1) break;
     if (d.getMonth() !== m - 1) { cells += '<div class="cal-cell out"></div>'; continue; }
-    const L = dayLoad(ds); total += L.total;
-    cells += `<button class="cal-cell${ds === t ? ' today' : ''}${ds === S.calDay ? ' sel' : ''}${L.conflict ? ' conflict' : ''}${d.getDay() % 6 === 0 ? ' we' : ''}" data-act="cal-day" data-date="${ds}" aria-label="${ds} 已排 ${L.total} 天">
+    const L = dayLoad(ds); total += L.total; if (d.getDay() % 6 !== 0) off += L.blocked;
+    cells += `<button class="cal-cell${ds === t ? ' today' : ''}${ds === S.calDay ? ' sel' : ''}${L.conflict ? ' conflict' : L.blocked ? ' off' : ''}${d.getDay() % 6 === 0 ? ' we' : ''}" data-act="cal-day" data-date="${ds}" aria-label="${ds} 已排 ${L.total} 天${L.blocked ? ',私人時間' : ''}">
       <div class="d"><b>${d.getDate()}</b>${L.conflict ? '<span class="x">⚠</span>' : ''}</div>
+      ${L.blocks.map((b) => `<div class="ev block ${b.slot}${b.slot === 'FULL' ? '' : ' half'}" title="私人時間:${h(b.title)}">${b.slot === 'FULL' ? '' : SLOT[b.slot][0] + ' '}${h(b.title)}</div>`).join('')}
       ${L.es.map((e) => { const p = proj(e.project_id); return `<div class="ev ${e.status} ${e.slot}${e.slot === 'FULL' ? '' : ' half'}" style="--c:${tcolor(p.type)}" title="${h(p.name)}${e.content ? ' — ' + h(e.content) : ''}">${e.slot === 'FULL' ? '' : SLOT[e.slot][0] + ' '}${h(p.name)}</div>`; }).join('')}
     </button>`;
   }
   const capM = setting('monthly_capacity', 20), L = dayLoad(S.calDay);
   const usedTypes = [...new Set(S.data.entries.filter((e) => e.date.startsWith(S.calMonth)).map((e) => proj(e.project_id)?.type))].filter(Boolean);
   return `
-  <div class="head"><h1>${y} 年 ${m} 月</h1>
+  <div class="head cal-head"><h1>${y} 年 ${m} 月</h1>
     <button class="btn icon" data-act="cal-prev" aria-label="上個月">‹</button><button class="btn" data-act="cal-today">今天</button><button class="btn icon" data-act="cal-next" aria-label="下個月">›</button>
-    <button class="btn primary" data-act="dlg-entry" data-date="${S.calDay}">＋ 排程</button></div>
-  <div class="small muted" style="margin-bottom:8px">本月已排 <b class="${total > capM ? 'bad' : ''}">${days(total)}</b> / 產能 ${days(capM)} 天。實色=已完成,虛框(手機為淡色)=預定。</div>
+    <button class="btn" data-act="dlg-block" data-date="${S.calDay}">＋ 私人時間</button><button class="btn primary" data-act="dlg-entry" data-date="${S.calDay}">＋ 排程</button></div>
+  <div class="small muted" style="margin-bottom:8px">本月已排 <b class="${total > capM ? 'bad' : ''}">${days(total)}</b> / 產能 ${days(capM)} 天${off ? `,私人時間占平日 ${days(off)} 天,可排工作約剩 <b>${days(Math.max(0, capM - off - total))}</b> 天` : ''}。實色=已完成,虛框(手機為淡色)=預定。</div>
   <div class="cal">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}${cells}</div>
-  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${h(TYPES[k].short)}</span>`).join('')}</div>
-  <div class="card" style="margin-top:8px"><h2>${md(S.calDay)}(${dow(S.calDay)})${L.conflict ? '<span class="badge s-bad">⚠ 時間衝突</span>' : ''}<span class="spacer"></span><span class="small muted">已排 ${days(L.total)} 天</span></h2>
-    <ul class="list">${L.es.map((e) => entryLi(e, false)).join('') || '<li class="empty" style="justify-content:center">這天沒有排程</li>'}</ul></div>`;
+  <div class="legend" style="margin-top:8px">${usedTypes.map((k) => `<span><i style="background:${tcolor(k)}"></i>${h(TYPES[k].short)}</span>`).join('')}<span><i class="hatch" style="background-color:var(--neutral)"></i>私人時間(不排工作)</span></div>
+  <div class="card" style="margin-top:8px"><h2>${md(S.calDay)}(${dow(S.calDay)})${L.conflict ? `<span class="badge s-bad">⚠ ${L.blockConflict ? '與私人時間衝突' : '時間衝突'}</span>` : ''}<span class="spacer"></span><span class="small muted">已排 ${days(L.total)} 天</span></h2>
+    <ul class="list">${L.blocks.map(blockLi).join('') + L.es.map((e) => entryLi(e, false)).join('') || '<li class="empty" style="justify-content:center">這天沒有排程</li>'}</ul></div>`;
 }
 
 // ---------- 專案 ----------
@@ -628,6 +652,18 @@ function dlgType(key) {
     <label class="chk"><input type="checkbox" name="active"${t.active ? ' checked' : ''}>啟用(可用於新專案)</label>
     ${dlgActions(!!key, 'type-del', key ? t.id : 0)}</form>`);
 }
+function dlgBlock({ id, date }) {
+  const b = id ? S.data.blocks.find((x) => x.id === id) : { title: '', category: '旅遊', start_date: date || today(), end_date: '', slot: 'FULL', note: '' };
+  openDlg(`<form data-form="block" data-id="${id || ''}"><h2>${id ? '編輯私人時間' : '新增私人時間'}</h2>
+    <p class="muted small" style="margin-top:0">旅遊、家庭或個人安排等不排工作的日期。會顯示在行事曆、計入產能占用;若與工作排程重疊會提示衝突。</p>
+    <label class="f"><span>名稱</span><input name="title" value="${h(b.title)}" required maxlength="100" placeholder="例:日本旅遊、家庭日"></label>
+    <div class="row2"><label class="f"><span>起日</span><input name="start_date" type="date" value="${b.start_date}" required></label>
+      <label class="f"><span>迄日(單日可不填)</span><input name="end_date" type="date" value="${b.end_date === b.start_date ? '' : b.end_date}"></label></div>
+    <div class="row2"><label class="f"><span>類別</span><select name="category">${BLOCK_CATS.map((c) => `<option${c === b.category ? ' selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label class="f"><span>時段</span><select name="slot">${opts(SLOT, b.slot)}</select></label></div>
+    <label class="f"><span>備註</span><input name="note" value="${h(b.note)}" maxlength="500"></label>
+    ${dlgActions(!!id, 'block-del', id)}</form>`);
+}
 function dlgPassword() {
   openDlg(`<form data-form="password"><h2>變更密碼</h2>
     <input name="username" autocomplete="username" value="${h(S.user.username)}" hidden>
@@ -651,6 +687,7 @@ const FORMS = {
     else if (f.to && f.to !== f.date) { const r = await api('POST', '/entries/batch', { ...f, from: f.date }); toast(`已建立 ${r.length} 筆排程`); }
     else await api('POST', '/entries', f);
     S.calDay = f.date; closeDlg(); await reload();
+    if (dayLoad(f.date).blockConflict) toast('注意:這天已標記為私人時間');
   },
   async income(f, id) { f.project_id = Number(f.project_id); await api(id ? 'PUT' : 'POST', '/incomes' + (id ? '/' + id : ''), f); closeDlg(); await reload(); },
   async type(f, id) { await api(id ? 'PUT' : 'POST', '/types' + (id ? '/' + id : ''), { ...f, color: Number(f.color), active: !!f.active }); closeDlg(); await reload(); },
@@ -664,6 +701,10 @@ const FORMS = {
       await api('POST', '/incomes', { project_id: id, date, amount: k === n ? rest - each * (n - 1) : each, status: 'expected', note: n === 1 ? '結案請款' : `第 ${k}/${n} 期` });
     }
     closeDlg(); await reload();
+  },
+  async block(f, id) {
+    await api(id ? 'PUT' : 'POST', '/blocks' + (id ? '/' + id : ''), f);
+    S.calDay = f.start_date; S.calMonth = f.start_date.slice(0, 7); closeDlg(); await reload();
   },
   async password(f) {
     if (f.next !== f.again) throw new Error('兩次輸入的新密碼不一致');
@@ -688,6 +729,8 @@ const ACTS = {
   'dlg-entry': (d) => dlgEntry({ id: Number(d.id) || 0, pid: Number(d.pid) || 0, date: d.date }),
   'dlg-income': (d) => dlgIncome({ id: Number(d.id) || 0, pid: Number(d.pid) || 0 }),
   'dlg-password': dlgPassword,
+  'dlg-block': (d) => dlgBlock({ id: Number(d.id) || 0, date: d.date }),
+  'block-del': async (d) => { if (confirm('刪除這段私人時間?')) { await api('DELETE', '/blocks/' + d.id); closeDlg(); await reload(); } },
   'dlg-installments': (d) => dlgInstallments(Number(d.id)),
   'bill-period': async (d) => {
     const p = proj(Number(d.pid)), b = billingPeriods(p).find((x) => x.ym === d.ym);

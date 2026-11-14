@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS incomes (
   status TEXT NOT NULL DEFAULT 'expected', note TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS blocks (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '個人',
+  start_date TEXT NOT NULL, end_date TEXT NOT NULL, slot TEXT NOT NULL DEFAULT 'FULL', note TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS types (
   id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, label TEXT NOT NULL, short TEXT NOT NULL,
   color INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1
@@ -209,6 +213,19 @@ function cleanEntry(b) {
     billable: b.billable === false || b.billable === 0 || b.billable === '0' ? 0 : 1,
   };
 }
+// 私人時間(旅遊、家庭等不可排工作的日期區間)
+const BLOCK_CATS = ['旅遊', '家庭', '個人', '其他'];
+function cleanBlock(b) {
+  const title = str(b.title, 100);
+  if (!title) bad('名稱為必填');
+  const start = date(b.start_date, true, '起日'), end = date(b.end_date || b.start_date, true, '迄日');
+  if (end < start) bad('迄日不可早於起日');
+  if ((Date.parse(end) - Date.parse(start)) / 864e5 > 366) bad('區間最長一年');
+  return {
+    title, category: oneOf(b.category || '個人', BLOCK_CATS, '類別'), start_date: start, end_date: end,
+    slot: oneOf(b.slot || 'FULL', Object.keys(SLOTS), '時段'), note: str(b.note, 500),
+  };
+}
 function cleanIncome(b) {
   const amount = Math.round(Number(b.amount));
   if (!(amount > 0)) bad('金額需大於 0');
@@ -250,11 +267,12 @@ function allData() {
     projects: db.prepare('SELECT * FROM projects ORDER BY id').all(),
     entries: db.prepare('SELECT * FROM entries ORDER BY date, id').all(),
     incomes: db.prepare('SELECT * FROM incomes ORDER BY date, id').all(),
+    blocks: db.prepare('SELECT * FROM blocks ORDER BY start_date, id').all(),
     settings,
   };
 }
 
-const CLEAN = { projects: cleanProject, entries: cleanEntry, incomes: cleanIncome };
+const CLEAN = { projects: cleanProject, entries: cleanEntry, incomes: cleanIncome, blocks: cleanBlock };
 
 // ---------- API ----------
 async function api(req, res, url) {
@@ -351,7 +369,7 @@ async function api(req, res, url) {
       return remove('types', id);
     }
   }
-  const mm = p.match(/^\/api\/(projects|entries|incomes)(?:\/(\d+))?$/);
+  const mm = p.match(/^\/api\/(projects|entries|incomes|blocks)(?:\/(\d+))?$/);
   if (mm) {
     const [, table, idStr] = mm;
     if (m === 'POST' && !idStr) return insert(table, CLEAN[table](await body(req)));
