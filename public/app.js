@@ -7,7 +7,7 @@ const SOURCES = ['驗證公司', '顧問公司', 'SI 公司', '直接客戶', '�
 const STATUS = { lead: '洽談中', reserved: '預定', confirmed: '已確認', active: '進行中', done: '已完成', cancelled: '取消' };
 const SLOT = { FULL: '全天', AM: '上午', PM: '下午' };
 const ESTATUS = { planned: '預定', done: '已完成' };
-const BILLING = { milestone: '專案分期請款', daily: '按日計・月結請款', monthly: '每月固定費用' };
+const BILLING = { milestone: '專案分期請款', daily: '按日計・月結請款', monthly: '每月固定費用', investment: '自有投入(暫無收款)' };
 const ISTATUS = { expected: '預計', invoiced: '已請款', received: '已收款' };
 
 // ---------- 工具 ----------
@@ -82,7 +82,7 @@ function monthSpan(from, to) {
   for (let [y, m] = from.split('-').map(Number); `${y}-${pad(m)}` <= to; m === 12 ? (y++, m = 1) : m++) out.push(`${y}-${pad(m)}`);
   return out;
 }
-const billingLabel = (p) => (p.billing === 'daily' ? `按日計 ${money(p.rate)}/天` : p.billing === 'monthly' ? `月費 ${money(p.rate)}` : '分期請款');
+const billingLabel = (p) => (p.billing === 'daily' ? `按日計 ${money(p.rate)}/天` : p.billing === 'monthly' ? `月費 ${money(p.rate)}` : p.billing === 'investment' ? '自有投入' : '分期請款');
 
 // 按日計/月費專案的各計費月份:應請金額 due 與已開立的收款紀錄 recs
 function billingPeriods(p, ps = projectSums(p)) {
@@ -113,9 +113,10 @@ function unbilledPeriods() {
 //   pre    已排預收 = 已排程未完成的人天、合約尚未到期的月份、分期的預計收款
 //   unrev  未排預估 = 預估人天/預估收入中尚未排入的餘額
 //   fc 預估合計 = earned + pre + unrev;billed 已請款(含已收);actual 實收;lead 洽談中(不計入 fc)
+//   invest 自有投入人天(研發等不收款的專案,含未排程);investCost = 人天 × 機會成本
 // 人天 = done 已完成 + sched 已排程 + unsched 未排程(平均攤在專案剩餘月份);free 義工
 function yearStats(year) {
-  const mk = () => ({ fc: 0, earned: 0, pre: 0, unrev: 0, lead: 0, billed: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0 });
+  const mk = () => ({ fc: 0, earned: 0, pre: 0, unrev: 0, lead: 0, billed: 0, actual: 0, done: 0, sched: 0, unsched: 0, free: 0, invest: 0, investCost: 0 });
   const months = Array.from({ length: 12 }, mk);
   const dims = { type: {}, source: {}, sourceName: {}, project: {} };
   let undatedRev = 0, undatedDays = 0;
@@ -168,7 +169,9 @@ function yearStats(year) {
       }
     }
     // 人天
-    for (const e of ps.es) { add(e.date, e.status === 'done' ? 'done' : 'sched', e.days); if (!e.billable) add(e.date, 'free', e.days); }
+    const inv = p.billing === 'investment' && !lead;
+    const invest = (ym, d) => { if (inv) { add(ym, 'invest', d); add(ym, 'investCost', d * p.rate); } };
+    for (const e of ps.es) { add(e.date, e.status === 'done' ? 'done' : 'sched', e.days); if (!e.billable) add(e.date, 'free', e.days); invest(e.date, e.days); }
     const restDays = p.est_days - (ps.done + ps.sched - ps.free); // 義工不占預估人天
     if (restDays > 0 && p.status !== 'done') {
       const a = p.start_date || p.end_date, b = p.end_date || p.start_date;
@@ -178,6 +181,7 @@ function yearStats(year) {
         const span = monthSpan(from, b.slice(0, 7) > from ? b.slice(0, 7) : from);
         for (const ym of span) {
           if (!lead) add(ym, 'unsched', restDays / span.length);
+          invest(ym, restDays / span.length);
           if (p.billing === 'daily') rev(ym, 'unrev', (restDays / span.length) * p.rate);
         }
       }
@@ -299,8 +303,8 @@ function viewDashboard() {
       <div class="sub">已請款 ${wan(T.billed)}・實收 ${wan(T.actual)}</div></div>
     <div class="card"><div class="lbl">投入人天(完成/全部)</div><div class="val">${days(T.done)}<span class="muted" style="font-size:15px"> / ${days(allDays)}</span></div>
       <div class="sub">年產能 ${days(capM * 12)} 天・已占用 ${pct(allDays, capM * 12)}${T.free ? `・含義工 ${days(T.free)} 天` : ''}</div></div>
-    <div class="card"><div class="lbl">每人天產值(預估)</div><div class="val">${allDays > 0 ? money(T.fc / allDays) : '—'}</div>
-      <div class="sub">洽談中潛在 ${wan(T.lead)}</div></div>
+    <div class="card"><div class="lbl">每人天產值(接案,預估)</div><div class="val">${allDays - T.invest > 0 ? money(T.fc / (allDays - T.invest)) : '—'}</div>
+      <div class="sub">${T.invest ? `自有投入 ${days(T.invest)} 天・機會成本 ${wan(T.investCost)}` : `洽談中潛在 ${wan(T.lead)}`}</div></div>
   </div>
   <div class="card"><h2>收入進度</h2>
     <div class="legend">${REV_LEGEND(T)}
@@ -357,7 +361,7 @@ function analysisCard(st) {
   const max = Math.max(1, ...rows.map((r) => r.g.fc));
   const allDays = T.done + T.sched + T.unsched;
   const cells = (g, d) => `<td class="num">${money(g.earned)}</td><td class="num">${money(g.pre)}</td><td class="num">${money(g.unrev)}</td><td class="num"><b>${money(g.fc)}</b></td>
-    <td class="num">${pct(g.fc, T.fc)}</td><td class="num">${money(g.billed)}</td><td class="num">${money(g.actual)}</td><td class="num">${days(d)}</td><td class="num">${d > 0 ? money(g.fc / d) : '—'}</td>`;
+    <td class="num">${pct(g.fc, T.fc)}</td><td class="num">${money(g.billed)}</td><td class="num">${money(g.actual)}</td><td class="num">${days(d)}${g.invest ? `<span class="muted small">(投入 ${days(g.invest)})</span>` : ''}</td><td class="num">${d - g.invest > 0.01 ? money(g.fc / (d - g.invest)) : '—'}</td>`;
   return `<div class="card"><h2>收入分析</h2>
     <div class="chips" style="margin-bottom:10px">${Object.entries(DIMS).map(([k, [label]]) => `<button class="chip${S.dim === k ? ' on' : ''}" data-act="dim" data-k="${k}">依${label}</button>`).join('')}</div>
     ${rows.length ? `<div class="legend">${REV_LEGEND()}</div>
@@ -377,12 +381,12 @@ function monthTable(st, capM) {
   const row = (label, m, cls, cap) => { const d = Math.round((m.done + m.sched + m.unsched) * 10) / 10; return `<tr class="${cls}"><td>${label}</td>
     <td class="num">${money(m.earned)}</td><td class="num">${money(m.pre)}</td><td class="num">${money(m.unrev)}</td><td class="num"><b>${money(m.fc)}</b></td>
     <td class="num">${money(m.billed)}</td><td class="num">${money(m.actual)}</td><td class="num">${m.lead ? money(m.lead) : '—'}</td>
-    <td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
+    <td class="num">${days(m.done)}</td><td class="num">${days(m.sched)}</td><td class="num">${days(m.unsched)}</td><td class="num">${m.invest ? days(m.invest) : '—'}</td><td class="num${d > cap ? ' bad' : ''}">${d > cap ? '⚠ ' : ''}${pct(d, cap)}</td></tr>`; };
   return `<div class="card"><h2>月統計表</h2><div class="tbl-wrap"><table>
-    <tr><th>月份</th><th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>已請款</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>產能占用</th></tr>
+    <tr><th>月份</th><th>已實現</th><th>已排預收</th><th>未排預估</th><th>預估合計</th><th>已請款</th><th>實收</th><th>洽談中</th><th>完成人天</th><th>已排程</th><th>未排程</th><th>其中自有投入</th><th>產能占用</th></tr>
     ${st.months.map((m, i) => row(`${i + 1} 月`, m, i === nowIdx ? 'now' : '', capM)).join('')}${row('全年', T, 'total', capM * 12)}
   </table></div>
-  <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。</p></div>`;
+  <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。自有投入=不收款的研發等專案人天,計入產能占用,但不列入每人天產值的分母。</p></div>`;
 }
 
 const plink = (p) => `<a href="#/project/${p.id}">${h(p.name)}</a>`;
@@ -445,7 +449,9 @@ function projectCard(p) {
     <div class="meta">${p.client ? h(p.client) + '・' : ''}${p.start_date || '未定'}${p.end_date ? ' ~ ' + p.end_date : ''}</div>
     <div class="nums">
       <div>人天 完成/排程/預估${s.free ? `(義工 ${days(s.free)})` : ''}<b>${days(s.done)} / ${days(used)} / ${days(p.est_days)}</b><div class="meter"><i class="fc" style="width:${Math.min(100, (used / Math.max(p.est_days, used, 0.5)) * 100)}%"></i><i class="act" style="width:${Math.min(100, (s.done / Math.max(p.est_days, used, 0.5)) * 100)}%"></i></div></div>
-      <div>收入 實收/預估<b>${wan(s.received)} / ${wan(p.est_revenue)}</b><div class="meter"><i class="act" style="width:${Math.min(100, (s.received / Math.max(p.est_revenue, s.received, 1)) * 100)}%"></i></div></div>
+      ${p.billing === 'investment'
+    ? `<div>收益 / 已投入成本<b>${wan(s.received)} / ${wan(s.done * p.rate)}</b><div class="meter"><i class="act" style="width:${Math.min(100, (s.received / Math.max(s.done * p.rate, s.received, 1)) * 100)}%"></i></div></div>`
+    : `<div>收入 實收/預估<b>${wan(s.received)} / ${wan(p.est_revenue)}</b><div class="meter"><i class="act" style="width:${Math.min(100, (s.received / Math.max(p.est_revenue, s.received, 1)) * 100)}%"></i></div></div>`}
     </div></a>`;
 }
 function viewProject(id) {
@@ -474,15 +480,18 @@ function viewProject(id) {
   <div class="grid kpi">
     <div class="card"><div class="lbl">預估人天</div><div class="val">${days(p.est_days)}</div><div class="sub ${over ? 'bad' : ''}">${over ? `⚠ 已排超出 ${days(paid - p.est_days)} 天` : `已排 ${days(paid)}・尚未排程 ${days(p.est_days - paid)} 天`}</div></div>
     <div class="card"><div class="lbl">實際人天(完成/已排)</div><div class="val">${days(s.done)}<span class="muted" style="font-size:15px"> / ${days(used)}</span></div><div class="sub">${s.free ? `含義工 ${days(s.free)} 天(不請款)` : `完成 ${pct(s.done, p.est_days)}`}</div></div>
+    ${p.billing === 'investment' ? `
+    <div class="card"><div class="lbl">已投入成本(機會成本)</div><div class="val">${wan(s.done * p.rate)}</div><div class="sub">${money(p.rate)}/天・預估總投入 ${wan(Math.max(p.est_days, used) * p.rate)}</div></div>
+    <div class="card"><div class="lbl">產品收益(已收)</div><div class="val">${wan(s.received)}</div><div class="sub">${s.billed ? `回收率 ${pct(s.received, s.done * p.rate)}・已登記 ${wan(s.billed)}` : '尚無收益'}</div></div>` : `
     <div class="card"><div class="lbl">預估收入</div><div class="val">${wan(p.est_revenue)}</div><div class="sub">每人天 ${p.est_days > 0 ? money(p.est_revenue / p.est_days) : '—'}</div></div>
-    <div class="card"><div class="lbl">已實收</div><div class="val">${wan(s.received)}</div><div class="sub">${pct(s.received, p.est_revenue)}・實際每人天 ${s.done > 0 ? money(s.received / s.done) : '—'}</div></div>
+    <div class="card"><div class="lbl">已實收</div><div class="val">${wan(s.received)}</div><div class="sub">${pct(s.received, p.est_revenue)}・實際每人天 ${s.done > 0 ? money(s.received / s.done) : '—'}</div></div>`}
   </div>
   ${billingCard}
   <div class="grid two">
     <div class="card"><h2>人天排程<span class="spacer"></span><button class="btn sm primary" data-act="dlg-entry" data-pid="${p.id}">＋ 排程</button></h2>
       <ul class="list">${s.es.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">尚未排程</li>'}</ul></div>
     <div class="card"><h2>收款<span class="spacer"></span>${p.billing === 'milestone' && rest > 0 ? `<button class="btn sm" data-act="dlg-installments" data-id="${p.id}">建立分期</button>` : ''}<button class="btn sm primary" data-act="dlg-income" data-pid="${p.id}">＋ 收款</button></h2>
-      <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || `<li class="empty" style="justify-content:center">尚無收款紀錄。${p.billing === 'milestone' ? '未建立時,預估收入會記在專案結束月;可按「建立分期」拆成數期。' : '未請款的月份會依費率自動計入預估收入。'}</li>`}</ul></div>
+      <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || `<li class="empty" style="justify-content:center">尚無收款紀錄。${p.billing === 'investment' ? '自有投入專案不計收入。日後產品有收益時,在這裡新增收款即可,會計入當月收入並顯示回收率。' : p.billing === 'milestone' ? '未建立時,預估收入會記在專案結束月;可按「建立分期」拆成數期。' : '未請款的月份會依費率自動計入預估收入。'}</li>`}</ul></div>
   </div>`;
 }
 
@@ -560,8 +569,9 @@ function dlgProject(id) {
     <div class="row2"><label class="f"><span>預估人天(0.5 為單位)</span><input name="est_days" type="number" min="0" step="0.5" inputmode="decimal" value="${p.est_days}"></label>
       <label class="f"><span>收款方式</span><select name="billing" data-change="billing">${opts(BILLING, p.billing)}</select></label></div>
     <label class="f" data-b="milestone"><span>預估收入(元)</span><input name="est_revenue" type="number" min="0" step="1" inputmode="numeric" value="${p.est_revenue}"></label>
-    <label class="f" data-b="daily monthly"><span data-rate-label></span><input name="rate" type="number" min="0" step="1" inputmode="numeric" value="${p.rate || ''}"></label>
+    <label class="f" data-b="daily monthly investment"><span data-rate-label></span><input name="rate" type="number" min="0" step="1" inputmode="numeric" value="${p.rate || ''}"></label>
     <p class="small muted" data-b="daily" style="margin-top:-4px">預估收入 = 預估人天 × 日費(半天半價)。每月依已完成人天結算請款。</p>
+    <p class="small muted" data-b="investment" style="margin-top:-4px">不計收入;人天照常計入產能占用,並以「人天 × 機會成本」估算投入成本。日後產品有收益時,直接在本專案新增收款即可。</p>
     <p class="small muted" data-b="monthly" style="margin-top:-4px">預估收入 = 月費 × 合約月數(開始日到結束日,跨到的月份都算一個月)。</p>
     <label class="f"><span>備註</span><textarea name="notes">${h(p.notes)}</textarea></label>
     ${dlgActions(!!id, 'project-del', id)}</form>`);
@@ -570,8 +580,8 @@ function dlgProject(id) {
 function syncBilling(form) {
   const b = form.billing.value;
   form.querySelectorAll('[data-b]').forEach((el) => (el.hidden = !el.dataset.b.split(' ').includes(b)));
-  $('[data-rate-label]', form).textContent = b === 'daily' ? '日費(元/天)' : '月費(元/月)';
-  if (b === 'daily' && !form.rate.value) form.rate.value = setting('default_daily_rate', 12000);
+  $('[data-rate-label]', form).textContent = b === 'daily' ? '日費(元/天)' : b === 'investment' ? '機會成本(元/天,若接案可收的日費)' : '月費(元/月)';
+  if ((b === 'daily' || b === 'investment') && !form.rate.value) form.rate.value = setting('default_daily_rate', 12000);
   form.rate.required = b !== 'milestone';
 }
 function dlgInstallments(id) {

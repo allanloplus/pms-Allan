@@ -62,7 +62,7 @@ function addColumn(table, name, ddl) {
 }
 addColumn('entries', 'content', "TEXT NOT NULL DEFAULT ''");          // 工作內容
 addColumn('entries', 'billable', 'INTEGER NOT NULL DEFAULT 1');        // 0 = 義工:算實際人天,不請款、不占預估人天
-addColumn('projects', 'billing', "TEXT NOT NULL DEFAULT 'milestone'"); // 收款方式:milestone 分期 / daily 按日計月結 / monthly 每月固定
+addColumn('projects', 'billing', "TEXT NOT NULL DEFAULT 'milestone'"); // 收款方式:milestone 分期 / daily 按日計月結 / monthly 每月固定 / investment 自有投入
 addColumn('projects', 'rate', 'INTEGER NOT NULL DEFAULT 0');           // 日費或月費
 addColumn('incomes', 'period', "TEXT NOT NULL DEFAULT ''");            // 計費月份 YYYY-MM(按日計/月費用)
 
@@ -146,7 +146,7 @@ const STATUSES = ['lead', 'reserved', 'confirmed', 'active', 'done', 'cancelled'
 const SLOTS = { FULL: 1, AM: 0.5, PM: 0.5 };
 const ENTRY_STATUS = ['planned', 'done'];
 const INCOME_STATUS = ['expected', 'invoiced', 'received'];
-const BILLING = ['milestone', 'daily', 'monthly'];
+const BILLING = ['milestone', 'daily', 'monthly', 'investment'];
 
 const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 function date(v, required, label) {
@@ -186,6 +186,7 @@ function cleanProject(b) {
   const start = date(b.start_date, false, '開始日'), end = date(b.end_date, false, '結束日');
   if (start && end && end < start) bad('結束日不可早於開始日');
   // 按日計與月費的預估收入由費率推算
+  if (billing === 'investment') estRev = 0; // 自有投入:不計收入,rate 為每人天的機會成本
   if (billing === 'daily') estRev = Math.round(estDays * rate);
   if (billing === 'monthly') {
     if (!start || !end) bad('每月固定費用需填開始日與結束日(合約期間)');
@@ -216,7 +217,7 @@ function cleanIncome(b) {
   if (period && !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) bad('計費月份格式錯誤');
   // 按日計/月費專案的收款一律歸屬某個計費月份,避免與應計金額重複計算
   const billing = db.prepare('SELECT billing FROM projects WHERE id = ?').get(pid).billing;
-  if (billing === 'milestone') period = ''; else if (!period) period = d.slice(0, 7);
+  if (billing !== 'daily' && billing !== 'monthly') period = ''; else if (!period) period = d.slice(0, 7);
   return {
     project_id: pid, date: d, amount, period,
     status: oneOf(b.status || 'expected', INCOME_STATUS, '狀態'), note: str(b.note, 500),
