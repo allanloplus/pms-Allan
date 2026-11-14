@@ -314,10 +314,11 @@ function viewDashboard() {
   </div>
   <div class="grid two">
     <div class="card"><h2>待處理</h2><ul class="list">
-      ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
-      ${stale.length ? `<li><span class="badge s-lead">待確認</span><div class="main">${stale.length} 筆過去的排程尚未確認(共 ${days(stale.reduce((s, e) => s + e.days, 0))} 天)</div><div class="acts"><button class="btn sm" data-act="confirm-stale">全部標為完成</button></div></li>` : ''}
-      ${overdue.map((i) => `<li><span class="badge s-bad">逾期未收</span><div class="main"><div class="t">${h(proj(i.project_id).name)}</div><div class="small muted">${i.date}・${money(i.amount)}・${ISTATUS[i.status]}</div></div><div class="acts"><button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button></div></li>`).join('')}
-      ${unbilled.map((b) => `<li><span class="badge s-lead">未請款</span><div class="main"><div class="t">${h(b.p.name)}</div><div class="small muted">${b.ym}${b.p.billing === 'daily' ? ` 月結・${days(b.done)} 天` : ' 月費'}・<span class="num">${money(b.due)}</span></div></div><div class="acts"><button class="btn sm" data-act="bill-period" data-pid="${b.p.id}" data-ym="${b.ym}">請款</button></div></li>`).join('')}
+      ${conflicts.map((d) => `<li><span class="badge s-bad">⚠ 時間衝突</span><div class="main"><div class="t">${md(d)}(${dow(d)})已排 ${days(dayLoad(d).total)} 天</div><div class="small muted">${dayLoad(d).es.map((e) => `${SLOT[e.slot]} ${plink(proj(e.project_id))}`).join('、')}</div></div><div class="acts"><button class="btn sm" data-act="goto-day" data-date="${d}">查看</button></div></li>`).join('')}
+      ${stale.length > 1 ? `<li><span class="badge s-lead">待確認</span><div class="main">${stale.length} 筆過去的排程尚未確認(共 ${days(stale.reduce((t, e) => t + e.days, 0))} 天),明細如下</div><div class="acts"><button class="btn sm" data-act="confirm-stale">全部標為完成</button></div></li>` : ''}
+      ${stale.map((e) => { const p = proj(e.project_id); return `<li><span class="badge s-lead">待確認</span><div class="main"><div class="t">${plink(p)}</div><div class="small muted">${md(e.date)}(${dow(e.date)})・${SLOT[e.slot]}・${days(e.days)} 天${e.billable ? '' : '・義工'}${e.content ? '・' + h(e.content) : ''}</div></div><div class="acts"><button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button><button class="btn sm" data-act="dlg-entry" data-id="${e.id}">編輯</button></div></li>`; }).join('')}
+      ${overdue.map((i) => `<li><span class="badge s-bad">逾期未收</span><div class="main"><div class="t">${plink(proj(i.project_id))}</div><div class="small muted">${i.date}・${money(i.amount)}・${ISTATUS[i.status]}</div></div><div class="acts"><button class="btn sm" data-act="income-received" data-id="${i.id}">已收款</button></div></li>`).join('')}
+      ${unbilled.map((b) => `<li><span class="badge s-lead">未請款</span><div class="main"><div class="t">${plink(b.p)}</div><div class="small muted">${b.ym}${b.p.billing === 'daily' ? ` 月結・${days(b.done)} 天` : ' 月費'}・<span class="num">${money(b.due)}</span></div></div><div class="acts"><button class="btn sm" data-act="bill-period" data-pid="${b.p.id}" data-ym="${b.ym}">請款</button></div></li>`).join('')}
       ${!conflicts.length && !stale.length && !overdue.length && !unbilled.length ? '<li class="empty" style="justify-content:center">沒有待處理事項</li>' : ''}
     </ul></div>
     <div class="card"><h2>未來 3 週行程<span class="spacer"></span><a class="small" href="#/calendar">行事曆 ›</a></h2><ul class="list">
@@ -384,10 +385,11 @@ function monthTable(st, capM) {
   <p class="muted small" style="margin-bottom:0">收入依工作發生的月份歸屬。已實現=已完成工作的價值;已排預收=已排程未完成、合約未到期月份與分期的預計收款;未排預估=預估人天或預估收入尚未排入的餘額;實收=已標記收款的金額。</p></div>`;
 }
 
+const plink = (p) => `<a href="#/project/${p.id}">${h(p.name)}</a>`;
 function entryLi(e, showDate) {
   const p = proj(e.project_id);
   return `<li><div class="when">${showDate ? `${md(e.date)}(${dow(e.date)})` : SLOT[e.slot]}</div>
-    <div class="main"><div class="t"><span class="dot" style="background:${tcolor(p.type)}"></span>${h(p.name)}</div>
+    <div class="main"><div class="t"><span class="dot" style="background:${tcolor(p.type)}"></span>${route()[0] === 'project' ? h(p.name) : plink(p)}</div>
     ${e.content ? `<div class="work">${h(e.content)}</div>` : ''}
     <div class="small muted">${e.billable ? '' : '<span class="badge s-lead">義工</span> '}${showDate ? SLOT[e.slot] + '・' : ''}${days(e.days)} 天・${ESTATUS[e.status]}${e.note ? '・備註:' + h(e.note) : ''}</div></div>
     <div class="acts">${e.status === 'planned' && e.date <= today() ? `<button class="btn sm" data-act="entry-done" data-id="${e.id}">完成</button>` : ''}
