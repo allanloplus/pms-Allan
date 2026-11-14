@@ -17,7 +17,7 @@ bash ./backup.sh || echo "(現有資料庫備份失敗或尚無資料,略過)"
 echo "== 2/4 停止服務並匯入"
 docker compose stop app
 docker compose run --rm --no-deps -T -u root -v "$SRC:/in:ro" app sh -c \
-  'rm -f /app/data/pms.db /app/data/pms.db-wal /app/data/pms.db-shm && cp /in/pms.db* /app/data/ && chown node:node /app/data/pms.db*'
+  'rm -f /app/data/pms.db /app/data/pms.db-wal /app/data/pms.db-shm && cp /in/pms.db* /app/data/ && chown node:node /app/data/pms.db* && if [ -d /in/media ]; then rm -rf /app/data/media && cp -r /in/media /app/data/media && chown -R node:node /app/data/media; fi'
 
 echo "== 3/4 啟動服務"
 docker compose up -d

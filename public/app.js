@@ -217,13 +217,14 @@ function dayLoad(date) {
 
 // ---------- 版面 ----------
 const ICON = {
+  spark: '<path d="M12 3l1.800 5.400L19 10l-5.200 1.600L12 17l-1.800-5.400L5 10l5.200-1.600z"/><path d="M18.500 15.500l.700 2 2 .700-2 .700-.700 2-.700-2-2-.700 2-.700z"/>',
   home: '<path d="M4 11l8-7 8 7v9H14v-6h-4v6H4z"/>',
   cal: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8 3v4M16 3v4"/>',
   proj: '<path d="M3 7h7l2 2h9v10H3z"/>',
   money: '<circle cx="12" cy="12" r="8.5"/><path d="M15 9.2c-.6-1-1.7-1.4-3-1.4-1.700 0-3 .8-3 2.100 0 3 6 1.400 6 4.300 0 1.300-1.300 2.100-3 2.100-1.400 0-2.600-.5-3.200-1.600M12 6v12"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2.100 2.100M16.300 16.300l2.100 2.100M5.600 18.400l2.100-2.100M16.300 7.700l2.100-2.100"/>',
 };
-const NAV = [['', '總覽', 'home'], ['calendar', '行事曆', 'cal'], ['projects', '專案', 'proj'], ['income', '收入', 'money'], ['settings', '設定', 'gear']];
+const NAV = [['', '總覽', 'home'], ['calendar', '行事曆', 'cal'], ['projects', '專案', 'proj'], ['income', '收入', 'money'], ['sparks', '靈感', 'spark'], ['settings', '設定', 'gear']];
 const route = () => location.hash.replace(/^#\/?/, '').split('/');
 
 function render() {
@@ -232,7 +233,7 @@ function render() {
   if (!S.data) return (app.innerHTML = '<main class="empty">載入中…</main>');
   const [r, arg] = route();
   const top = r === 'project' ? 'projects' : r;
-  const views = { '': viewDashboard, calendar: viewCalendar, projects: viewProjects, project: () => viewProject(Number(arg)), income: viewIncome, settings: viewSettings };
+  const views = { '': viewDashboard, calendar: viewCalendar, projects: viewProjects, project: () => viewProject(Number(arg)), income: viewIncome, sparks: viewSparks, settings: viewSettings };
   const y0 = window.scrollY;
   app.innerHTML = `
     <header class="topbar">
@@ -242,7 +243,8 @@ function render() {
       <div class="spacer"></div>
     </header>
     <main>${S.user.must_change ? `<div class="banner"><span>⚠ 目前仍使用預設密碼,上線前請先變更。</span><span class="spacer"></span><button class="btn sm" data-act="dlg-password">變更密碼</button></div>` : ''}
-    ${(views[r] || viewDashboard)()}</main>`;
+    ${(views[r] || viewDashboard)()}</main>
+    <button class="fab" data-act="dlg-spark" aria-label="記一筆靈感" title="記一筆靈感"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round">${ICON.spark}</svg></button>`;
   if (render.last === location.hash) window.scrollTo(0, y0); else window.scrollTo(0, 0);
   render.last = location.hash;
 }
@@ -346,6 +348,7 @@ function viewDashboard() {
         .sort((a, b) => a[0].localeCompare(b[0])).map((x) => x[1]).join('') || '<li class="empty" style="justify-content:center">未來 3 週沒有排程</li>'}
     </ul></div>
   </div>
+  ${sparkDashCard()}
   ${analysisCard(st)}
   ${monthTable(st, capM)}`;
 }
@@ -516,7 +519,8 @@ function viewProject(id) {
       <ul class="list">${s.es.map((e) => entryLi(e, true)).join('') || '<li class="empty" style="justify-content:center">尚未排程</li>'}</ul></div>
     <div class="card"><h2>收款<span class="spacer"></span>${p.billing === 'milestone' && rest > 0 ? `<button class="btn sm" data-act="dlg-installments" data-id="${p.id}">建立分期</button>` : ''}<button class="btn sm primary" data-act="dlg-income" data-pid="${p.id}">＋ 收款</button></h2>
       <ul class="list">${s.is.map((i) => incomeLi(i, false)).join('') || `<li class="empty" style="justify-content:center">尚無收款紀錄。${p.billing === 'investment' ? '自有投入專案不計收入。日後產品有收益時,在這裡新增收款即可,會計入當月收入並顯示回收率。' : p.billing === 'milestone' ? '未建立時,預估收入會記在專案結束月;可按「建立分期」拆成數期。' : '未請款的月份會依費率自動計入預估收入。'}</li>`}</ul></div>
-  </div>`;
+  </div>
+  ${sparkProjectCard(p.id)}`;
 }
 
 // ---------- 收入 ----------

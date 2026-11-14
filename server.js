@@ -58,6 +58,22 @@ CREATE TABLE IF NOT EXISTS types (
 );
 `);
 
+// 靈感:一則靈感(spark)由多個片段(文字、圖片、錄音、塗鴉)組成;媒體檔存在 DATA_DIR/media
+db.exec(`
+CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, mime TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sparks (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
+  type_key TEXT NOT NULL DEFAULT '', project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  heat INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, touched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spark_items (
+  id INTEGER PRIMARY KEY, spark_id INTEGER NOT NULL REFERENCES sparks(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', media_id TEXT, created_at TEXT NOT NULL
+);
+`);
+const MEDIA_DIR = path.join(DATA_DIR, 'media');
+fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
 // 升級:舊資料庫補上新欄位
 function addColumn(table, name, ddl) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(name)) {
@@ -111,6 +127,9 @@ function failState(ip) {
 setInterval(() => {
   for (const ip of fails.keys()) failState(ip);
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+  // 上傳後沒有掛到任何靈感的媒體檔,超過一天即清除
+  dropMedia(db.prepare(`SELECT id FROM media WHERE created_at < ? AND id NOT IN (SELECT media_id FROM spark_items WHERE media_id IS NOT NULL)`)
+    .all(new Date(Date.now() - 864e5).toISOString()).map((r) => r.id));
 }, 10 * 60 * 1000).unref();
 
 function clientIp(req) {
@@ -226,6 +245,86 @@ function cleanBlock(b) {
     slot: oneOf(b.slot || 'FULL', Object.keys(SLOTS), '時段'), note: str(b.note, 500),
   };
 }
+// ---------- 靈感 ----------
+const SPARK_STATUS = ['new', 'growing', 'parked', 'done'];
+const ITEM_KINDS = ['text', 'image', 'audio', 'doodle'];
+const IMG = 8e6, AUD = 20e6; // 單檔上限(位元組)
+const MEDIA_TYPES = { 'image/png': IMG, 'image/jpeg': IMG, 'image/webp': IMG, 'image/gif': IMG,
+  'audio/webm': AUD, 'audio/mp4': AUD, 'audio/ogg': AUD, 'audio/mpeg': AUD, 'audio/wav': AUD };
+const nowIso = () => new Date().toISOString();
+const mediaFile = (id) => path.join(MEDIA_DIR, id);
+
+function cleanSpark(b) {
+  const type_key = str(b.type_key, 40);
+  if (type_key) typeKey(type_key);
+  return {
+    title: str(b.title, 200), status: oneOf(b.status || 'new', SPARK_STATUS, '狀態'), type_key,
+    project_id: b.project_id ? projectId(b.project_id) : null,
+  };
+}
+function cleanItem(b) {
+  const kind = oneOf(b.kind, ITEM_KINDS, '片段類型');
+  const text = String(b.text ?? '').trim().slice(0, 20000);
+  if (kind === 'text') { if (!text) bad('內容不可空白'); return { kind, text, media_id: null }; }
+  const media_id = String(b.media_id || '');
+  const m = db.prepare('SELECT mime FROM media WHERE id = ?').get(media_id);
+  if (!m || m.mime.startsWith('audio/') !== (kind === 'audio')) bad('附件不存在或類型不符');
+  if (db.prepare('SELECT 1 FROM spark_items WHERE media_id = ?').get(media_id)) bad('附件已被使用');
+  return { kind, text, media_id };
+}
+function addItems(sparkId, items) {
+  if (!Array.isArray(items) || !items.length) bad('至少需要一段內容');
+  if (items.length > 20) bad('一次最多 20 個片段');
+  const t = nowIso();
+  return items.map((it) => insert('spark_items', { spark_id: sparkId, ...cleanItem(it), created_at: t }));
+}
+function dropMedia(ids) {
+  for (const id of ids.filter(Boolean)) {
+    db.prepare('DELETE FROM media WHERE id = ?').run(id);
+    fs.rmSync(mediaFile(id), { force: true });
+  }
+}
+function sparkRow(id) {
+  const sp = db.prepare('SELECT * FROM sparks WHERE id = ?').get(id);
+  if (!sp) throw new HttpError(404, '資料不存在');
+  sp.items = db.prepare('SELECT * FROM spark_items WHERE spark_id = ? ORDER BY id').all(id);
+  return sp;
+}
+function allSparks() {
+  const items = {};
+  for (const it of db.prepare('SELECT * FROM spark_items ORDER BY id').all()) (items[it.spark_id] ||= []).push(it);
+  return db.prepare('SELECT * FROM sparks ORDER BY id DESC').all().map((sp) => ({ ...sp, items: items[sp.id] || [] }));
+}
+function rawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new HttpError(413, '檔案過大')); req.destroy(); } else chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+// 串流媒體檔;支援 Range(iOS Safari 播放錄音需要)
+function sendMedia(req, res, id) {
+  const m = /^[0-9a-f]{24}$/.test(id) && db.prepare('SELECT * FROM media WHERE id = ?').get(id);
+  if (!m || !fs.existsSync(mediaFile(id))) throw new HttpError(404, '檔案不存在');
+  const head = { 'Content-Type': m.mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=604800',
+    'Content-Disposition': 'inline', 'Content-Security-Policy': "default-src 'none'; sandbox" };
+  let start = 0, end = m.size - 1, status = 200;
+  const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (r && (r[1] || r[2])) {
+    if (r[1]) { start = Number(r[1]); if (r[2]) end = Math.min(end, Number(r[2])); } else start = Math.max(0, m.size - Number(r[2]));
+    if (start > end || start >= m.size) { res.writeHead(416, { 'Content-Range': `bytes */${m.size}` }); return res.end(); }
+    status = 206; head['Content-Range'] = `bytes ${start}-${end}/${m.size}`;
+  }
+  head['Content-Length'] = end - start + 1;
+  res.writeHead(status, head);
+  fs.createReadStream(mediaFile(id), { start, end }).pipe(res);
+}
+const STREAMED = Symbol('streamed');
+
 function cleanIncome(b) {
   const amount = Math.round(Number(b.amount));
   if (!(amount > 0)) bad('金額需大於 0');
@@ -268,6 +367,7 @@ function allData() {
     entries: db.prepare('SELECT * FROM entries ORDER BY date, id').all(),
     incomes: db.prepare('SELECT * FROM incomes ORDER BY date, id').all(),
     blocks: db.prepare('SELECT * FROM blocks ORDER BY start_date, id').all(),
+    sparks: allSparks(),
     settings,
   };
 }
@@ -355,6 +455,55 @@ async function api(req, res, url) {
     return out;
   }
 
+  // 靈感與媒體
+  if (p === '/api/media' && m === 'POST') {
+    const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (!MEDIA_TYPES[mime]) throw new HttpError(415, '不支援的檔案類型');
+    const buf = await rawBody(req, MEDIA_TYPES[mime]);
+    if (!buf.length) bad('檔案是空的');
+    const id = crypto.randomBytes(12).toString('hex');
+    fs.writeFileSync(mediaFile(id), buf, { mode: 0o600 });
+    db.prepare('INSERT INTO media (id, mime, size, created_at) VALUES (?,?,?,?)').run(id, mime, buf.length, nowIso());
+    return { id, mime, size: buf.length };
+  }
+  const med = p.match(/^\/api\/media\/([0-9a-f]+)$/);
+  if (med && m === 'GET') { sendMedia(req, res, med[1]); return STREAMED; }
+
+  if (p === '/api/sparks' && m === 'POST') {
+    const b = await body(req), t = nowIso();
+    db.exec('BEGIN');
+    try {
+      const sp = insert('sparks', { ...cleanSpark(b), created_at: t, touched_at: t });
+      addItems(sp.id, b.items);
+      db.exec('COMMIT');
+      return sparkRow(sp.id);
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+  const sm = p.match(/^\/api\/sparks\/(\d+)(?:\/(items|touch))?$/);
+  if (sm) {
+    const id = Number(sm[1]);
+    sparkRow(id); // 404 if missing
+    if (m === 'PUT' && !sm[2]) { update('sparks', id, { ...cleanSpark(await body(req)), touched_at: nowIso() }); return sparkRow(id); }
+    if (m === 'POST' && sm[2]) { // 補充片段,或單純「還有感覺」:都會加溫並更新最後接觸時間
+      if (sm[2] === 'items') addItems(id, (await body(req)).items);
+      db.prepare('UPDATE sparks SET heat = heat + 1, touched_at = ? WHERE id = ?').run(nowIso(), id);
+      return sparkRow(id);
+    }
+    if (m === 'DELETE' && !sm[2]) {
+      const ids = db.prepare('SELECT media_id FROM spark_items WHERE spark_id = ?').all(id).map((r) => r.media_id);
+      remove('sparks', id); dropMedia(ids);
+      return { ok: true };
+    }
+  }
+  const im = p.match(/^\/api\/spark-items\/(\d+)$/);
+  if (im && m === 'DELETE') {
+    const it = db.prepare('SELECT * FROM spark_items WHERE id = ?').get(Number(im[1]));
+    if (!it) throw new HttpError(404, '資料不存在');
+    if (db.prepare('SELECT COUNT(*) AS n FROM spark_items WHERE spark_id = ?').get(it.spark_id).n <= 1) bad('這是最後一個片段,請直接刪除整則靈感');
+    remove('spark_items', it.id); dropMedia([it.media_id]);
+    return sparkRow(it.spark_id);
+  }
+
   const tm = p.match(/^\/api\/types(?:\/(\d+))?$/);
   if (tm) {
     const id = Number(tm[1]);
@@ -421,7 +570,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy',
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   let url;
   try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end(); }
@@ -432,6 +581,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
     const out = await api(req, res, url);
+    if (out === STREAMED) return;
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(out));
   } catch (e) {
