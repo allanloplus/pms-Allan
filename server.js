@@ -15,14 +15,20 @@ const DEFAULT_USER = 'allanlo';
 const DEFAULT_PASS = '00001231';
 
 // 程式版本 = 程式碼最後一次提交的時間。本機直接問 git;容器內沒有 git,改讀部署腳本產生的 version.txt
+// 版本編號 allanlo-YYYYMMDD-NN:日期為最後提交日(臺北時間),NN 為當天第幾次更新
 function readVersion() {
-  const make = (l) => (l[0] ? { date: l[0].trim(), hash: (l[1] || '').trim(), subject: (l[2] || '').trim(), built_at: (l[3] || '').trim() || null } : null);
+  const make = (l) => (l[0] ? { date: l[0].trim(), hash: (l[1] || '').trim(), subject: (l[2] || '').trim(), built_at: (l[3] || '').trim() || null, label: (l[4] || '').trim() } : null);
   try {
     if (fs.existsSync(path.join(__dirname, '.git'))) {
-      const out = require('node:child_process').execFileSync('git', ['log', '-1', '--format=%cI%n%h%n%s'],
+      const git = (args) => require('node:child_process').execFileSync('git', args,
         { cwd: __dirname, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
-      const v = make(out.split('\n'));
-      if (v) return v;
+      const v = make(git(['log', '-1', '--format=%cI%n%h%n%s']).split('\n'));
+      if (v) {
+        const day = (iso) => new Date(Date.parse(iso) + 8 * 3600e3).toISOString().slice(0, 10); // 臺北時間的日期
+        const days = git(['log', '-n', '500', '--format=%cI']).split('\n').filter(Boolean).map(day);
+        v.label = `allanlo-${days[0].replace(/-/g, '')}-${String(days.filter((d) => d === days[0]).length).padStart(2, '0')}`;
+        return v;
+      }
     }
   } catch { /* 沒有 git 就往下 */ }
   try { return make(fs.readFileSync(path.join(__dirname, 'version.txt'), 'utf8').split('\n')); } catch { return null; }
@@ -642,6 +648,6 @@ function setPasswordFromStdin() {
 if (require.main === module) {
   try { sweepMedia(); } catch (e) { console.error(e); }
   if (process.argv[2] === 'set-password') setPasswordFromStdin();
-  else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}${VERSION ? `(版本 ${VERSION.date} ${VERSION.hash})` : ''}`));
+  else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}${VERSION ? `(版本 ${VERSION.label || VERSION.hash})` : ''}`));
 }
 module.exports = { server, db };

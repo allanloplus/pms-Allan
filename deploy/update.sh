@@ -12,4 +12,4 @@ bash ./write-version.sh
 docker compose up -d --build
 docker image prune -f >/dev/null
 docker compose ps
-echo "更新完成。$(sed -n 1p ../version.txt | cut -c1-16 | tr T ' ') 的版本已上線(代碼 $(sed -n 2p ../version.txt))"
+echo "更新完成,已上線版本: $(sed -n 5p ../version.txt)"
