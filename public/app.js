@@ -249,7 +249,8 @@ function render() {
       <div class="spacer"></div>
     </header>
     <main>${S.user.must_change ? `<div class="banner"><span>⚠ 目前仍使用預設密碼,上線前請先變更。</span><span class="spacer"></span><button class="btn sm" data-act="dlg-password">變更密碼</button></div>` : ''}
-    ${(views[r] || viewDashboard)()}</main>
+    ${(views[r] || viewDashboard)()}
+    <footer class="ver">${versionLine()}</footer></main>
     <button class="fab" data-act="dlg-spark" aria-label="記一筆靈感" title="記一筆靈感"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round">${ICON.spark}</svg></button>`;
   if (render.last === location.hash) window.scrollTo(0, y0); else window.scrollTo(0, 0);
   render.last = location.hash;
@@ -562,6 +563,16 @@ function viewIncome() {
   <div class="card"><h2>收款紀錄(依收款日期)</h2>${body || '<div class="empty">本年度尚無收款紀錄</div>'}</div>`;
 }
 
+// ---------- 版本 ----------
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function versionLine() {
+  const v = S.data.version;
+  return v ? `程式版本 ${fmtTime(v.date)}${v.hash ? '・' + h(v.hash) : ''}` : '程式版本 未知';
+}
+
 // ---------- 設定 ----------
 function viewSettings() {
   return `
@@ -579,6 +590,13 @@ function viewSettings() {
     <p class="muted small" style="margin-bottom:0">停用的類型不會出現在新增專案的選單,既有專案與統計不受影響。</p></div>
   <div class="card"><h2>帳號</h2><p class="muted small" style="margin-top:0">登入帳號:${h(S.user.username)}</p>
     <div class="chips"><button class="btn" data-act="dlg-password">變更密碼</button><button class="btn" data-act="logout">登出</button></div></div>
+  <div class="card"><h2>程式版本</h2>${S.data.version ? `<table>
+      <tr><td>程式碼最後更新</td><td><b>${fmtTime(S.data.version.date)}</b></td></tr>
+      <tr><td>版本代碼</td><td>${h(S.data.version.hash) || '—'}</td></tr>
+      <tr><td>最後一項修改</td><td style="white-space:normal">${h(S.data.version.subject) || '—'}</td></tr>
+      ${S.data.version.built_at ? `<tr><td>主機套用時間</td><td>${fmtTime(S.data.version.built_at)}</td></tr>` : ''}</table>
+      <p class="muted small" style="margin-bottom:0">「程式碼最後更新」是這個版本最後一次修改程式的時間,不是您執行更新的時間。每次修改完成後我會告知該版本的時間與代碼,與這裡一致就表示已是最新版。</p>`
+    : '<p class="muted small" style="margin:0">無法取得版本資訊。主機請以 deploy/update.sh 更新;本機需以 git 取得的資料夾執行。</p>'}</div>
   <div class="card"><h2>儲存空間</h2><div id="storage" class="muted small">讀取中…</div></div>
   <div class="card"><h2>資料備份</h2><p class="muted small" style="margin-top:0">匯出全部專案、排程與收款為 JSON 檔。</p><a class="btn" href="/api/export" download style="display:inline-block">下載備份</a></div>`;
 }

@@ -10,6 +10,7 @@ command -v docker >/dev/null || { echo "找不到 docker"; exit 1; }
 docker network inspect "$NET" >/dev/null 2>&1 || { echo "找不到 Docker 網路 $NET(既有的 Caddy 是否在執行?)"; exit 1; }
 
 echo "== 1/3 建置並啟動"
+bash ./write-version.sh
 docker compose up -d --build
 for i in $(seq 1 20); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)" 2>/dev/null)" = healthy ] && break

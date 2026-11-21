@@ -14,6 +14,21 @@ const SESSION_DAYS = 30;
 const DEFAULT_USER = 'allanlo';
 const DEFAULT_PASS = '00001231';
 
+// 程式版本 = 程式碼最後一次提交的時間。本機直接問 git;容器內沒有 git,改讀部署腳本產生的 version.txt
+function readVersion() {
+  const make = (l) => (l[0] ? { date: l[0].trim(), hash: (l[1] || '').trim(), subject: (l[2] || '').trim(), built_at: (l[3] || '').trim() || null } : null);
+  try {
+    if (fs.existsSync(path.join(__dirname, '.git'))) {
+      const out = require('node:child_process').execFileSync('git', ['log', '-1', '--format=%cI%n%h%n%s'],
+        { cwd: __dirname, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const v = make(out.split('\n'));
+      if (v) return v;
+    }
+  } catch { /* 沒有 git 就往下 */ }
+  try { return make(fs.readFileSync(path.join(__dirname, 'version.txt'), 'utf8').split('\n')); } catch { return null; }
+}
+const VERSION = readVersion();
+
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const db = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, 'pms.db'));
 db.exec(`
@@ -386,6 +401,7 @@ function allData() {
     incomes: db.prepare('SELECT * FROM incomes ORDER BY date, id').all(),
     blocks: db.prepare('SELECT * FROM blocks ORDER BY start_date, id').all(),
     sparks: allSparks(),
+    version: VERSION,
     settings,
   };
 }
@@ -626,6 +642,6 @@ function setPasswordFromStdin() {
 if (require.main === module) {
   try { sweepMedia(); } catch (e) { console.error(e); }
   if (process.argv[2] === 'set-password') setPasswordFromStdin();
-  else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}`));
+  else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}${VERSION ? `(版本 ${VERSION.date} ${VERSION.hash})` : ''}`));
 }
 module.exports = { server, db };

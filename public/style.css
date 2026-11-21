@@ -286,3 +286,4 @@ input.sp-title:hover, input.sp-title:focus { border-color: var(--line); padding-
 .it-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .it img { max-width: 100%; max-height: 420px; border-radius: 8px; display: block; border: 1px solid var(--line); }
 #storage td:first-child { white-space: normal; } #storage table { table-layout: auto; }
+.ver { margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }

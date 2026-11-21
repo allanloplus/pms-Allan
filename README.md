@@ -82,6 +82,7 @@ Compose 專案 `pms-allan` 執行,加入同一個網路,由該 Caddy 代理 `htt
 | 日常維運(在主機上) | 指令 |
 |---|---|
 | 更新程式(先備份再重建) | `bash /opt/pms-allan/deploy/update.sh` |
+| 確認上線版本 | 每頁最下方與「設定 → 程式版本」顯示程式碼最後更新時間與版本代碼 |
 | 備份資料庫與媒體檔到 `/var/backups/pms-allan`(各保留最近 3 份) | `bash /opt/pms-allan/deploy/backup.sh` |
 | 重設密碼 | `bash /opt/pms-allan/deploy/set-password.sh` |
 | 以上傳的資料庫取代主機資料(先 `scp -r data root@主機:/root/pms-upload`) | `bash /opt/pms-allan/deploy/import-db.sh` |
