@@ -93,6 +93,7 @@ Compose 專案 `pms-allan` 執行,加入同一個網路,由該 Caddy 代理 `htt
 ## 安全設計
 
 - 密碼以 scrypt 加鹽雜湊儲存;登入比對採固定時間比較。
+- 預設密碼僅供本機(`127.0.0.1`)首次啟動使用。系統一旦對外服務(`TRUST_PROXY=1` 或監聽非本機位址),在以 `set-password` 設定密碼之前一律拒絕登入;部署腳本會在首次安裝時要求設定。
 - 同一 IP 15 分鐘內登入失敗 5 次即鎖定,失敗事件寫入日誌。
 - Session token 為 256-bit 亂數,資料庫只存 SHA-256;cookie 為 `HttpOnly`、`SameSite=Strict`(HTTPS 下加 `Secure`),效期 30 天;變更密碼會註銷其他裝置的 session。
 - 所有寫入 API 僅接受 `application/json`,搭配 `SameSite=Strict` 防 CSRF;輸入皆於伺服器端驗證,SQL 全部使用參數化查詢。

@@ -10,6 +10,7 @@ const PORT = Number(process.env.PORT || 3300);
 const HOST = process.env.HOST || '127.0.0.1';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const PUBLIC_FACING = TRUST_PROXY || !['127.0.0.1', 'localhost', '::1'].includes(HOST); // 經反向代理或監聽對外位址
 const SESSION_DAYS = 30;
 const DEFAULT_USER = 'allanlo';
 const DEFAULT_PASS = '00001231';
@@ -425,6 +426,11 @@ async function api(req, res, url) {
     const f = failState(ip);
     if (f && f.count >= FAIL_MAX) throw new HttpError(429, '登入失敗次數過多,請 15 分鐘後再試');
     const b = await body(req);
+    // 預設密碼寫在公開的程式碼裡:只要系統對外服務(非僅本機),就不允許以預設密碼登入
+    if (PUBLIC_FACING && db.prepare('SELECT 1 FROM users WHERE must_change = 1').get()) {
+      console.warn(`[auth] 拒絕登入:仍為預設密碼 ip=${ip}`);
+      throw new HttpError(403, '此系統尚未設定密碼,無法登入。請在主機執行 deploy/set-password.sh 設定後再試');
+    }
     const u = verifyLogin(b.username, b.password);
     if (!u) {
       const cur = failState(ip) || { count: 0, first: Date.now() };
