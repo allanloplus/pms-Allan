@@ -259,7 +259,7 @@ function render() {
 
 function viewLogin() {
   return `<div class="login"><div class="card">
-    <h1>Allan Lo的今天和明天</h1><p class="muted small">個人專案・人天・收入管理</p>
+    <h1>Allan Lo的今天和明天</h1><p class="muted small">個人專案・工作人天・靈感-創意-發想</p>
     <form data-form="login">
       <label class="f"><span>帳號</span><input name="username" autocomplete="username" autocapitalize="none" required autofocus></label>
       <label class="f"><span>密碼</span><input name="password" type="password" autocomplete="current-password" required></label>
