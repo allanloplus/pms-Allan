@@ -17,7 +17,7 @@ const DEFAULT_PASS = '00001231';
 // 程式版本 = 程式碼最後一次提交的時間。本機直接問 git;容器內沒有 git,改讀部署腳本產生的 version.txt
 // 版本編號 allanlo-YYYYMMDD-NN:日期為最後提交日(臺北時間),NN 為當天第幾次更新
 function readVersion() {
-  const make = (l) => (l[0] ? { date: l[0].trim(), hash: (l[1] || '').trim(), subject: (l[2] || '').trim(), built_at: (l[3] || '').trim() || null, label: (l[4] || '').trim() } : null);
+  const make = (l) => (l[0] ? { date: l[0].trim(), hash: (l[1] || '').trim(), subject: (l[2] || '').trim(), built_at: (l[3] || '').trim() || null, label: (l[4] || '').trim(), first_date: (l[5] || '').trim() || null } : null);
   try {
     if (fs.existsSync(path.join(__dirname, '.git'))) {
       const git = (args) => require('node:child_process').execFileSync('git', args,
@@ -27,6 +27,8 @@ function readVersion() {
         const day = (iso) => new Date(Date.parse(iso) + 8 * 3600e3).toISOString().slice(0, 10); // 臺北時間的日期
         const days = git(['log', '-n', '500', '--format=%cI']).split('\n').filter(Boolean).map(day);
         v.label = `allanlo-${days[0].replace(/-/g, '')}-${String(days.filter((d) => d === days[0]).length).padStart(2, '0')}`;
+        // 首次發佈 = 最早一筆提交的時間
+        v.first_date = git(['log', '--reverse', '--format=%cI']).split('\n')[0].trim() || null;
         return v;
       }
     }

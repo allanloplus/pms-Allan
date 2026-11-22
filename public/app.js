@@ -570,7 +570,7 @@ function fmtTime(iso) {
 }
 function versionLine() {
   const v = S.data.version;
-  return v ? `程式版本 ${fmtTime(v.date)}・${h(v.label || v.hash)}` : '程式版本 未知';
+  return v ? `程式版本 ${fmtTime(v.date)}・${h(v.label || v.hash)}${v.first_date ? `<br>首次發佈 ${fmtTime(v.first_date).slice(0, 10)}` : ''}` : '程式版本 未知';
 }
 
 // ---------- 設定 ----------
@@ -593,6 +593,7 @@ function viewSettings() {
   <div class="card"><h2>程式版本</h2>${S.data.version ? `<table>
       <tr><td>程式碼最後更新</td><td><b>${fmtTime(S.data.version.date)}</b></td></tr>
       <tr><td>版本編號</td><td><b>${h(S.data.version.label) || '—'}</b></td></tr>
+      ${S.data.version.first_date ? `<tr><td>首次發佈</td><td>${fmtTime(S.data.version.first_date)}</td></tr>` : ''}
       <tr><td>Git 代碼</td><td>${h(S.data.version.hash) || '—'}</td></tr>
       <tr><td>最後一項修改</td><td style="white-space:normal">${h(S.data.version.subject) || '—'}</td></tr>
       ${S.data.version.built_at ? `<tr><td>主機套用時間</td><td>${fmtTime(S.data.version.built_at)}</td></tr>` : ''}</table>
