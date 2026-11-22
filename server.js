@@ -346,6 +346,38 @@ function sendMedia(req, res, id) {
   fs.createReadStream(mediaFile(id), { start, end }).pipe(res);
 }
 const STREAMED = Symbol('streamed');
+const stampNow = () => { const d = new Date(Date.now() + 8 * 3600e3).toISOString(); return d.slice(0, 10).replace(/-/g, '') + '-' + d.slice(11, 16).replace(':', ''); }; // 臺北時間
+// 資料庫備份:VACUUM INTO 取得不受寫入中影響的完整複本;登入中的工作階段不帶出去
+function sendDbBackup(res) {
+  const tmp = path.join(DATA_DIR, `.backup-${crypto.randomBytes(6).toString('hex')}.db`);
+  try {
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    const copy = new DatabaseSync(tmp);
+    copy.exec('DELETE FROM sessions'); copy.close();
+    const buf = fs.readFileSync(tmp);
+    res.writeHead(200, { 'Content-Type': 'application/vnd.sqlite3', 'Content-Length': buf.length,
+      'Content-Disposition': `attachment; filename="pms-${stampNow()}.db"` });
+    res.end(buf);
+  } finally { fs.rmSync(tmp, { force: true }); }
+}
+// 媒體檔打包成 tar(ustar 格式,檔名為 media/<id>),可用一般解壓縮工具或 tar 指令解開
+function sendMediaTar(res) {
+  const rows = db.prepare('SELECT id, size FROM media ORDER BY created_at').all().filter((r) => fs.existsSync(mediaFile(r.id)));
+  res.writeHead(200, { 'Content-Type': 'application/x-tar', 'Content-Disposition': `attachment; filename="pms-media-${stampNow()}.tar"` });
+  const field = (buf, off, len, str) => buf.write(str.padEnd(len, '\0').slice(0, len), off, len, 'latin1');
+  for (const r of rows) {
+    const data = fs.readFileSync(mediaFile(r.id)), hd = Buffer.alloc(512);
+    field(hd, 0, 100, `media/${r.id}`); field(hd, 100, 8, '0000644\0'); field(hd, 108, 8, '0000000\0'); field(hd, 116, 8, '0000000\0');
+    field(hd, 124, 12, data.length.toString(8).padStart(11, '0') + '\0');
+    field(hd, 136, 12, Math.floor(fs.statSync(mediaFile(r.id)).mtimeMs / 1000).toString(8).padStart(11, '0') + '\0');
+    hd.fill(' ', 148, 156); hd[156] = 48; /* '0' 一般檔案 */ field(hd, 257, 8, 'ustar\x0000');
+    let sum = 0; for (const b of hd) sum += b;
+    field(hd, 148, 8, sum.toString(8).padStart(6, '0') + '\0 ');
+    res.write(hd); res.write(data);
+    if (data.length % 512) res.write(Buffer.alloc(512 - (data.length % 512)));
+  }
+  res.end(Buffer.alloc(1024));
+}
 // 清掉沒有任何靈感使用的媒體:上傳後未掛上且超過一天的紀錄,以及磁碟上沒有對應紀錄的殘留檔
 function sweepMedia() {
   const dayAgo = new Date(Date.now() - 864e5).toISOString();
@@ -458,10 +490,9 @@ async function api(req, res, url) {
   if (p === '/api/me' && m === 'GET') return { username: user.username, must_change: !!user.must_change };
   if (p === '/api/data' && m === 'GET') return allData();
   if (p === '/api/storage' && m === 'GET') return storageInfo();
-  if (p === '/api/export' && m === 'GET') {
-    res.setHeader('Content-Disposition', `attachment; filename="pms-backup-${new Date().toISOString().slice(0, 10)}.json"`);
-    return { exported_at: new Date().toISOString(), ...allData() };
-  }
+  // 下載備份:資料庫的一致性快照(SQLite 檔),以及靈感媒體檔(tar)
+  if (p === '/api/backup/db' && m === 'GET') { sendDbBackup(res); return STREAMED; }
+  if (p === '/api/backup/media' && m === 'GET') { sendMediaTar(res); return STREAMED; }
   if (p === '/api/password' && m === 'POST') {
     const b = await body(req);
     if (!verifyLogin(user.username, b.current)) throw new HttpError(400, '目前密碼錯誤');
@@ -655,6 +686,7 @@ function setPasswordFromStdin() {
 
 if (require.main === module) {
   try { sweepMedia(); } catch (e) { console.error(e); }
+  for (const f of fs.readdirSync(DATA_DIR)) if (/^\.backup-[0-9a-f]+\.db$/.test(f)) fs.rmSync(path.join(DATA_DIR, f), { force: true }); // 上次下載備份中斷留下的暫存檔
   if (process.argv[2] === 'set-password') setPasswordFromStdin();
   else server.listen(PORT, HOST, () => console.log(`PMS 已啟動:http://${HOST}:${PORT}${VERSION ? `(版本 ${VERSION.label || VERSION.hash})` : ''}`));
 }

@@ -12,7 +12,7 @@
 | 專案 | 類型、來源(驗證公司 / 顧問公司 / SI / 直接客戶 / 自有)、狀態(洽談中 → 預定 → 已確認 → 進行中 → 已完成 / 取消)、預估人天與收入、排程與收款明細 |
 | 收入 | 收款紀錄(預計 → 已請款 → 已收款)依月份列示,應收與逾期一目了然 |
 | 靈感 | 隨手記下突然的發想:文字、網址、圖片 / 拍照、錄音、手繪塗鴉可混在同一則;之後可持續補充成時間軸。狀態分新火花 / 發展中 / 先放著 / 已轉專案;放超過 14 天的會在「重逢」再次出現;「碰撞」隨機抽兩則找關聯;可一鍵發展成專案。每頁右下角的按鈕可隨時記一筆 |
-| 設定 | 年度收入目標、每月可投入人天、工作類型維護(名稱、簡稱、顏色、排序、停用)、變更密碼、JSON 備份下載 |
+| 設定 | 年度收入目標、每月可投入人天、工作類型維護(名稱、簡稱、顏色、排序、停用)、變更密碼、程式版本、儲存空間、下載備份(資料庫檔與媒體檔) |
 
 ### 統計口徑
 
@@ -87,6 +87,19 @@ Compose 專案 `pms-allan` 執行,加入同一個網路,由該 Caddy 代理 `htt
 | 重設密碼 | `bash /opt/pms-allan/deploy/set-password.sh` |
 | 以上傳的資料庫取代主機資料(先 `scp -r data root@主機:/root/pms-upload`) | `bash /opt/pms-allan/deploy/import-db.sh` |
 | 狀態 / 日誌 | `cd /opt/pms-allan/deploy && docker compose ps`、`docker compose logs -f` |
+
+### 還原備份
+
+「設定 → 資料備份」可下載資料庫(`pms-日期-時間.db`)與媒體檔(`pms-media-日期-時間.tar`)。
+
+- **還原到主機**:把兩個檔案上傳到主機同一個資料夾,再執行匯入(會先備份現有資料,並要求重設密碼):
+
+  ```bash
+  scp pms-20261122-0900.db pms-media-20261122-0900.tar root@主機:/root/
+  bash /opt/pms-allan/deploy/import-db.sh /root/pms-20261122-0900.db
+  ```
+
+- **在本機開啟**:停止本機的 PMS,把 `.db` 檔複製成專案資料夾下的 `data/pms.db`;媒體檔以 `tar -xf pms-media-….tar -C data` 解開。
 
 資料存在 Docker 具名磁碟區 `pms-allan_data`(資料庫 `pms.db` 與靈感的媒體檔 `media/`,備份腳本兩者都會備份)。**不要執行 `docker compose down -v`**,那會刪除資料庫。
 

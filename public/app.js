@@ -600,7 +600,10 @@ function viewSettings() {
       <p class="muted small" style="margin-bottom:0">「程式碼最後更新」是這個版本最後一次修改程式的時間,不是您執行更新的時間。版本編號最後兩碼是當天第幾次更新。每次修改完成後會告知版本編號,與這裡一致就表示已是最新版。</p>`
     : '<p class="muted small" style="margin:0">無法取得版本資訊。主機請以 deploy/update.sh 更新;本機需以 git 取得的資料夾執行。</p>'}</div>
   <div class="card"><h2>儲存空間</h2><div id="storage" class="muted small">讀取中…</div></div>
-  <div class="card"><h2>資料備份</h2><p class="muted small" style="margin-top:0">匯出全部專案、排程與收款為 JSON 檔。</p><a class="btn" href="/api/export" download style="display:inline-block">下載備份</a></div>`;
+  <div class="card"><h2>資料備份</h2>
+    <p class="muted small" style="margin-top:0">把資料下載到自己的電腦保存,主機故障時仍可還原。資料庫檔包含全部資料(專案、排程、收款、類型、私人時間、靈感文字);靈感的圖片、錄音、塗鴉需另外下載媒體檔。</p>
+    <div class="chips"><a class="btn" href="/api/backup/db" download>下載資料庫(.db)</a><a class="btn" href="/api/backup/media" download>下載媒體檔(.tar)</a></div>
+    <p class="muted small" style="margin-bottom:0">檔案內含您所有的業務資料與密碼雜湊,請妥善保存,不要放在公開的地方。還原方式見 README「還原備份」。</p></div>`;
 }
 
 // ---------- 對話框 ----------
