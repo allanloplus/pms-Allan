@@ -8,5 +8,5 @@ export TZ=Asia/Taipei
 DAY="$(git -C "$ROOT" log -1 --format=%cd --date=format-local:%Y%m%d)"
 SEQ="$(git -C "$ROOT" log -n 500 --format=%cd --date=format-local:%Y%m%d | grep -c "^$DAY\$")"
 LABEL="$(printf 'allanlo-%s-%02d' "$DAY" "$SEQ")"
-{ git -C "$ROOT" log -1 --format='%cI%n%h%n%s'; date -Iseconds; echo "$LABEL"; git -C "$ROOT" log --reverse --format=%cI | head -n 1; } > "$ROOT/version.txt"
+{ git -C "$ROOT" log -1 --format='%cI%n%h%n%s'; date -Iseconds; echo "$LABEL"; git -C "$ROOT" log --reverse --format=%cI | sed -n 1p; } > "$ROOT/version.txt"
 echo "版本: $LABEL($(git -C "$ROOT" log -1 --format=%cd --date=format-local:'%Y/%m/%d %H:%M'))"
